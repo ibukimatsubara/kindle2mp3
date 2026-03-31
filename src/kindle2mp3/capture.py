@@ -43,6 +43,7 @@ class CaptureRunResult:
     transport: str
     output_dir: Path
     saved_paths: list[Path]
+    stop_reason: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -52,6 +53,7 @@ class CaptureRunResult:
             "output_dir": str(self.output_dir),
             "saved_paths": [str(path) for path in self.saved_paths],
             "page_count": len(self.saved_paths),
+            "stop_reason": self.stop_reason,
         }
 
 
@@ -156,10 +158,13 @@ class PageCaptureRunner:
         key_name: str,
         key_code: int,
         output_dir: str | Path,
-        pages: int,
+        pages: int | None = None,
+        stop_after_no_change: int = 4,
     ) -> CaptureRunResult:
-        if pages <= 0:
+        if pages is not None and pages <= 0:
             raise ValueError("pages must be greater than zero")
+        if stop_after_no_change <= 0:
+            raise ValueError("stop_after_no_change must be greater than zero")
 
         directory = Path(output_dir)
         directory.mkdir(parents=True, exist_ok=True)
@@ -173,7 +178,13 @@ class PageCaptureRunner:
         saved_paths.append(first_path)
 
         previous_path = first_path
-        for page_number in range(2, pages + 1):
+        no_change_streak = 0
+        page_number = 2
+        stop_reason: str | None = None
+        while True:
+            if pages is not None and page_number > pages:
+                break
+
             activate_kindle()
             time.sleep(0.2)
             post_key_press(key_code, transport=self.transport)
@@ -184,11 +195,20 @@ class PageCaptureRunner:
             diff_score = compute_content_difference(previous_path, next_path)
             if diff_score < self.min_diff_score:
                 next_path.unlink(missing_ok=True)
-                raise RuntimeError(
-                    f"page turn did not change the page at step {page_number - 1}: diff={diff_score:.6f}"
-                )
+                no_change_streak += 1
+                if pages is not None:
+                    raise RuntimeError(
+                        f"page turn did not change the page at step {page_number - 1}: diff={diff_score:.6f}"
+                    )
+                if no_change_streak >= stop_after_no_change:
+                    stop_reason = f"no_change_{no_change_streak}"
+                    break
+                continue
+
+            no_change_streak = 0
             saved_paths.append(next_path)
             previous_path = next_path
+            page_number += 1
 
         return CaptureRunResult(
             key_name=key_name,
@@ -196,6 +216,7 @@ class PageCaptureRunner:
             transport=self.transport,
             output_dir=directory,
             saved_paths=saved_paths,
+            stop_reason=stop_reason,
         )
 
 

@@ -16,10 +16,40 @@ from kindle2mp3.sessions import SessionManager
 from kindle2mp3.tts import VoicevoxTtsRunner
 from kindle2mp3.windowing import MacOSWindowDetector, WindowingUnavailableError
 
+DEFAULT_SPEAKER = 58
+DEFAULT_KEY = "right"
+DEFAULT_TRANSPORT = "system_events"
+DEFAULT_STOP_AFTER_NO_CHANGE = 4
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="kindle2mp3")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    run_parser = subparsers.add_parser("run", help="Run capture, OCR, TTS, and merge in one command")
+    run_parser.add_argument("--session", help="Existing session id, e.g. book_0001")
+    run_parser.add_argument("--title", help="Session title when creating a new session")
+    run_parser.add_argument("--window-id", type=int, help="Explicit macOS window id")
+    run_parser.add_argument("--key", choices=("left", "right", "space"), default=DEFAULT_KEY)
+    run_parser.add_argument(
+        "--transport",
+        choices=("system_events", "cgevent"),
+        default=DEFAULT_TRANSPORT,
+        help="Key injection backend",
+    )
+    run_parser.add_argument("--pages", type=int, help="Number of pages to capture")
+    run_parser.add_argument(
+        "--stop-after-no-change",
+        type=int,
+        default=DEFAULT_STOP_AFTER_NO_CHANGE,
+        help="Stop after this many consecutive no-change turns when --pages is omitted",
+    )
+    run_parser.add_argument("--lang", default="japan", help="PaddleOCR language code")
+    run_parser.add_argument("--speaker", type=int, default=DEFAULT_SPEAKER, help="VOICEVOX speaker style id")
+    run_parser.add_argument("--base-url", default="http://127.0.0.1:50021", help="VOICEVOX Engine base URL")
+    run_parser.add_argument("--max-chars", type=int, default=180, help="Maximum characters per chunk")
+    run_parser.add_argument("--settle-delay", type=float, default=1.0, help="Delay after each page turn")
+    run_parser.add_argument("--json", action="store_true", help="Emit JSON instead of text")
 
     windows_parser = subparsers.add_parser("windows", help="Inspect macOS windows")
     windows_subparsers = windows_parser.add_subparsers(dest="windows_command", required=True)
@@ -67,7 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     tts_run = tts_subparsers.add_parser("run", help="Run VOICEVOX TTS for a session")
     tts_run.add_argument("--session", required=True, help="Session id, e.g. book_0001")
-    tts_run.add_argument("--speaker", type=int, required=True, help="VOICEVOX speaker style id")
+    tts_run.add_argument("--speaker", type=int, default=DEFAULT_SPEAKER, help="VOICEVOX speaker style id")
     tts_run.add_argument("--base-url", default="http://127.0.0.1:50021", help="VOICEVOX Engine base URL")
     tts_run.add_argument("--max-chars", type=int, default=180, help="Maximum characters per chunk")
     tts_run.add_argument("--json", action="store_true", help="Emit JSON instead of text")
@@ -99,15 +129,21 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser = capture_subparsers.add_parser("run", help="Capture multiple pages with keyboard page turns")
     run_parser.add_argument("--window-id", type=int, help="Explicit macOS window id")
     run_parser.add_argument("--session", help="Session id. When set, output goes to workspace/<session>/capture/raw")
-    run_parser.add_argument("--key", choices=("left", "right", "space"), required=True)
+    run_parser.add_argument("--key", choices=("left", "right", "space"), default=DEFAULT_KEY)
     run_parser.add_argument(
         "--transport",
         choices=("system_events", "cgevent"),
-        default="system_events",
+        default=DEFAULT_TRANSPORT,
         help="Key injection backend",
     )
     run_parser.add_argument("--output-dir", help="Directory for captured PNG files")
-    run_parser.add_argument("--pages", type=int, required=True, help="Number of pages to capture")
+    run_parser.add_argument("--pages", type=int, help="Number of pages to capture")
+    run_parser.add_argument(
+        "--stop-after-no-change",
+        type=int,
+        default=DEFAULT_STOP_AFTER_NO_CHANGE,
+        help="Stop after this many consecutive no-change turns when --pages is omitted",
+    )
     run_parser.add_argument("--settle-delay", type=float, default=1.0, help="Delay after each page turn")
     run_parser.add_argument("--json", action="store_true", help="Emit JSON instead of text")
 
@@ -120,6 +156,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "windows":
         return handle_windows(args)
+    if args.command == "run":
+        return handle_run(args)
     if args.command == "session":
         return handle_session(args)
     if args.command == "capture":
@@ -133,6 +171,86 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.error(f"Unknown command: {args.command}")
     return 2
+
+
+def handle_run(args: argparse.Namespace) -> int:
+    manager = SessionManager()
+    if args.session:
+        try:
+            session = manager.load(args.session)
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+    else:
+        session = manager.create(title=args.title)
+
+    namespace_capture = argparse.Namespace(
+        capture_command="run",
+        window_id=args.window_id,
+        session=session.session_id,
+        key=args.key,
+        transport=args.transport,
+        output_dir=None,
+        pages=args.pages,
+        stop_after_no_change=args.stop_after_no_change,
+        settle_delay=args.settle_delay,
+        json=False,
+    )
+    capture_status = handle_capture(namespace_capture)
+    if capture_status != 0:
+        return capture_status
+
+    namespace_ocr = argparse.Namespace(
+        ocr_command="run",
+        session=session.session_id,
+        lang=args.lang,
+        json=False,
+    )
+    ocr_status = handle_ocr(namespace_ocr)
+    if ocr_status != 0:
+        return ocr_status
+
+    namespace_tts = argparse.Namespace(
+        tts_command="run",
+        session=session.session_id,
+        speaker=args.speaker,
+        base_url=args.base_url,
+        max_chars=args.max_chars,
+        json=False,
+    )
+    tts_status = handle_tts(namespace_tts)
+    if tts_status != 0:
+        return tts_status
+
+    namespace_merge = argparse.Namespace(
+        merge_command="run",
+        session=session.session_id,
+        json=False,
+    )
+    merge_status = handle_merge(namespace_merge)
+    if merge_status != 0:
+        return merge_status
+
+    session = manager.load(session.session_id)
+    output_meta = session.metadata.get("output", {})
+    if not isinstance(output_meta, dict):
+        output_meta = {}
+
+    payload = {
+        "session_id": session.session_id,
+        "status": session.metadata.get("status"),
+        "audio_path": output_meta.get("audio_path"),
+        "audio_format": output_meta.get("audio_format"),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Completed session: {session.session_id}")
+        if payload["audio_path"]:
+            print(f"Output: {payload['audio_path']}")
+        if payload["audio_format"]:
+            print(f"Format: {payload['audio_format']}")
+    return 0
 
 
 def handle_windows(args: argparse.Namespace) -> int:
@@ -404,6 +522,7 @@ def handle_capture(args: argparse.Namespace) -> int:
                 key_code=key_code,
                 output_dir=output_dir,
                 pages=args.pages,
+                stop_after_no_change=args.stop_after_no_change,
             )
         except RuntimeError as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -511,6 +630,8 @@ def render_capture_run_result(result) -> str:
         f"Transport: {result.transport}",
         f"Output directory: {result.output_dir}",
     ]
+    if result.stop_reason:
+        lines.append(f"Stop reason: {result.stop_reason}")
     if result.saved_paths:
         lines.append(f"First file: {result.saved_paths[0].name}")
         lines.append(f"Last file: {result.saved_paths[-1].name}")
