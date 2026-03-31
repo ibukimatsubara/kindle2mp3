@@ -18,12 +18,10 @@
 1. 対象アプリを開く
 2. 対象書籍を開く
 3. 読み上げを開始したいページに移動する
-4. `capture` を実行してページ画像を保存する
-5. `ocr` を実行してテキスト化する
-6. `tts` を実行して音声化する
-7. `merge` を実行して最終 MP3 を作る
+4. `run` を実行して最後まで処理する
+5. 必要なら個別ステップを再実行する
 
-この設計では、各ステップを独立コマンドに分割する。
+この設計では、`run` を主導線にしつつ、各ステップを独立コマンドでも実行できるようにする。
 
 理由:
 
@@ -138,7 +136,28 @@ Created session: book_0001
 Path: workspace/book_0001
 ```
 
-### Step 2: Capture Pages
+### Step 2: Run Full Pipeline
+
+通常は 1 コマンドで最後まで実行する。
+
+```bash
+kindle2mp3 run --title "Book Name"
+```
+
+既存セッションを使う場合:
+
+```bash
+kindle2mp3 run --session book_0001
+```
+
+既定値:
+
+- `--key right`
+- `--transport system_events`
+- `--speaker 58`
+- `--pages` 未指定時は、差分なしが 4 回連続したら停止
+
+### Step 3: Capture Pages
 
 利用者が対象書籍を開いた後で実行する。
 
@@ -157,16 +176,10 @@ kindle2mp3 capture run --session book_0001
 - 前面化: `AppleScript`
 - キー送信: `System Events key code`
 
-コマンド案:
+個別実行の例:
 
 ```bash
-kindle2mp3 capture run --session book_0001 --key right --pages 120
-```
-
-またはセッション未統合の段階では:
-
-```bash
-kindle2mp3 capture run --output-dir workspace/book_0001/capture/raw --key right --pages 120
+kindle2mp3 capture run --session book_0001 --key right
 ```
 
 方向とキーの対応は次を基本とする。
@@ -205,18 +218,12 @@ kindle2mp3 capture run --session book_0001 --direction left
 
 #### Stop Condition
 
-ページ取得の終了条件も初期段階では利用者指定を基本にする。
+既定では、ページ差分が連続 4 回出なかったら自動停止する。
 
-コマンド案:
-
-```bash
-kindle2mp3 capture run --session book_0001 --key right --pages 120
-```
-
-または対話なしで実行しやすいように、次も候補にする。
+必要なら上限ページ数も指定できる。
 
 ```bash
-kindle2mp3 capture run --session book_0001 --key right --until-duplicate 3
+kindle2mp3 capture run --session book_0001 --pages 120
 ```
 
 ただし初期版は `--pages` を優先採用する。

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import sys
 
 from kindle2mp3.capture import (
@@ -10,16 +9,30 @@ from kindle2mp3.capture import (
     KeyPressProbe,
     WindowCapture,
 )
-from kindle2mp3.merge import AudioMerger
-from kindle2mp3.ocr import PaddleOcrRunner
+from kindle2mp3.defaults import (
+    DEFAULT_KEY,
+    DEFAULT_SPEAKER,
+    DEFAULT_STOP_AFTER_NO_CHANGE,
+    DEFAULT_TRANSPORT,
+    DEFAULT_VOICEVOX_BASE_URL,
+)
+from kindle2mp3.pipeline import (
+    run_capture_stage,
+    run_merge_stage,
+    run_ocr_stage,
+    run_tts_stage,
+)
+from kindle2mp3.presenters import (
+    render_capture_run_result,
+    render_key_probe_result,
+    render_kindle_summary,
+    render_merge_run_result,
+    render_ocr_run_result,
+    render_tts_run_result,
+    render_window_table,
+)
 from kindle2mp3.sessions import SessionManager
-from kindle2mp3.tts import VoicevoxTtsRunner
 from kindle2mp3.windowing import MacOSWindowDetector, WindowingUnavailableError
-
-DEFAULT_SPEAKER = 58
-DEFAULT_KEY = "right"
-DEFAULT_TRANSPORT = "system_events"
-DEFAULT_STOP_AFTER_NO_CHANGE = 4
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,7 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument("--lang", default="japan", help="PaddleOCR language code")
     run_parser.add_argument("--speaker", type=int, default=DEFAULT_SPEAKER, help="VOICEVOX speaker style id")
-    run_parser.add_argument("--base-url", default="http://127.0.0.1:50021", help="VOICEVOX Engine base URL")
+    run_parser.add_argument("--base-url", default=DEFAULT_VOICEVOX_BASE_URL, help="VOICEVOX Engine base URL")
     run_parser.add_argument("--max-chars", type=int, default=180, help="Maximum characters per chunk")
     run_parser.add_argument("--settle-delay", type=float, default=1.0, help="Delay after each page turn")
     run_parser.add_argument("--json", action="store_true", help="Emit JSON instead of text")
@@ -98,7 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
     tts_run = tts_subparsers.add_parser("run", help="Run VOICEVOX TTS for a session")
     tts_run.add_argument("--session", required=True, help="Session id, e.g. book_0001")
     tts_run.add_argument("--speaker", type=int, default=DEFAULT_SPEAKER, help="VOICEVOX speaker style id")
-    tts_run.add_argument("--base-url", default="http://127.0.0.1:50021", help="VOICEVOX Engine base URL")
+    tts_run.add_argument("--base-url", default=DEFAULT_VOICEVOX_BASE_URL, help="VOICEVOX Engine base URL")
     tts_run.add_argument("--max-chars", type=int, default=180, help="Maximum characters per chunk")
     tts_run.add_argument("--json", action="store_true", help="Emit JSON instead of text")
 
@@ -332,31 +345,11 @@ def handle_ocr(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    image_paths = sorted(manager.capture_raw_dir(session).glob("page_*.png"))
-    if not image_paths:
-        print("error: no captured PNG files found for session", file=sys.stderr)
-        return 1
-
-    runner = PaddleOcrRunner(lang=args.lang)
     try:
-        result = runner.run_for_session(
-            session_id=session.session_id,
-            image_paths=image_paths,
-            raw_dir=manager.ocr_raw_dir(session),
-            normalized_dir=manager.ocr_normalized_dir(session),
-            combined_path=manager.ocr_combined_path(session),
-        )
+        result = run_ocr_stage(manager=manager, session=session, lang=args.lang)
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-
-    session.metadata["status"] = "ocr_completed"
-    ocr_meta = session.metadata.setdefault("ocr", {})
-    if isinstance(ocr_meta, dict):
-        ocr_meta["provider"] = "paddleocr"
-        ocr_meta["language"] = args.lang
-        ocr_meta["page_count"] = len(result.pages)
-    manager.save(session)
 
     if args.json:
         print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
@@ -377,32 +370,17 @@ def handle_tts(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    input_text = manager.ocr_combined_path(session)
-    if not input_text.exists():
-        print("error: OCR combined.txt not found for session", file=sys.stderr)
-        return 1
-
-    runner = VoicevoxTtsRunner(base_url=args.base_url, max_chars=args.max_chars)
     try:
-        result = runner.run_for_session(
-            session_id=session.session_id,
-            input_text_path=input_text,
-            chunks_dir=manager.tts_chunks_dir(session),
-            wav_dir=manager.tts_wav_dir(session),
-            manifest_path=manager.tts_manifest_path(session),
+        result = run_tts_stage(
+            manager=manager,
+            session=session,
             speaker=args.speaker,
+            base_url=args.base_url,
+            max_chars=args.max_chars,
         )
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-
-    session.metadata["status"] = "tts_completed"
-    tts_meta = session.metadata.setdefault("tts", {})
-    if isinstance(tts_meta, dict):
-        tts_meta["provider"] = "voicevox"
-        tts_meta["speaker"] = args.speaker
-        tts_meta["chunk_count"] = len(result.chunks)
-    manager.save(session)
 
     if args.json:
         print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
@@ -423,30 +401,11 @@ def handle_merge(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    wav_paths = sorted(manager.tts_wav_dir(session).glob("chunk_*.wav"))
-    if not wav_paths:
-        print("error: no TTS WAV files found for session", file=sys.stderr)
-        return 1
-
-    merger = AudioMerger()
     try:
-        result = merger.run(
-            wav_paths=wav_paths,
-            merged_wav_path=manager.output_merged_wav_path(session),
-            output_mp3_path=manager.output_mp3_path(session),
-            output_m4a_path=manager.output_m4a_path(session),
-        )
+        result = run_merge_stage(manager=manager, session=session)
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-
-    session.metadata["status"] = "merge_completed"
-    output_meta = session.metadata.setdefault("output", {})
-    if isinstance(output_meta, dict):
-        output_meta["mp3_path"] = str(result.output_audio_path) if result.output_format == "mp3" else None
-        output_meta["audio_path"] = str(result.output_audio_path)
-        output_meta["audio_format"] = result.output_format
-    manager.save(session)
 
     if args.json:
         print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
@@ -500,7 +459,6 @@ def handle_capture(args: argparse.Namespace) -> int:
     if args.capture_command == "run":
         key_name, key_code = resolve_key_spec(args.key)
         runner = PageCaptureRunner(settle_delay=args.settle_delay, transport=args.transport)
-        output_dir: str | Path
         session = None
         if args.session:
             manager = SessionManager()
@@ -509,33 +467,36 @@ def handle_capture(args: argparse.Namespace) -> int:
             except RuntimeError as exc:
                 print(f"error: {exc}", file=sys.stderr)
                 return 1
-            output_dir = manager.capture_raw_dir(session)
         elif args.output_dir:
             output_dir = args.output_dir
         else:
             print("error: either --session or --output-dir is required", file=sys.stderr)
             return 1
         try:
-            result = runner.run(
-                window,
-                key_name=key_name,
-                key_code=key_code,
-                output_dir=output_dir,
-                pages=args.pages,
-                stop_after_no_change=args.stop_after_no_change,
-            )
+            if session is not None:
+                result = run_capture_stage(
+                    manager=manager,
+                    session=session,
+                    window=window,
+                    key_name=key_name,
+                    key_code=key_code,
+                    transport=args.transport,
+                    settle_delay=args.settle_delay,
+                    pages=args.pages,
+                    stop_after_no_change=args.stop_after_no_change,
+                )
+            else:
+                result = runner.run(
+                    window,
+                    key_name=key_name,
+                    key_code=key_code,
+                    output_dir=output_dir,
+                    pages=args.pages,
+                    stop_after_no_change=args.stop_after_no_change,
+                )
         except RuntimeError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
-        if session is not None:
-            manager = SessionManager()
-            session.metadata["status"] = "capture_completed"
-            capture_meta = session.metadata.setdefault("capture", {})
-            if isinstance(capture_meta, dict):
-                capture_meta["key"] = key_name
-                capture_meta["transport"] = args.transport
-                capture_meta["page_count"] = len(result.saved_paths)
-            manager.save(session)
         if args.json:
             print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
         else:
@@ -566,110 +527,6 @@ def resolve_key_spec(key_name: str) -> tuple[str, int]:
         "space": 49,
     }
     return key_name, key_codes[key_name]
-
-
-def render_window_table(windows: list) -> str:
-    if not windows:
-        return "No windows found."
-
-    headers = ("window_id", "owner", "title", "width", "height", "x", "y")
-    rows = [headers]
-    for window in windows:
-        rows.append(
-            (
-                str(window.window_id),
-                window.owner_name,
-                window.title or "<untitled>",
-                str(window.width),
-                str(window.height),
-                str(window.bounds["X"]),
-                str(window.bounds["Y"]),
-            )
-        )
-
-    widths = [max(len(row[index]) for row in rows) for index in range(len(headers))]
-    return "\n".join(
-        "  ".join(value.ljust(widths[index]) for index, value in enumerate(row)) for row in rows
-    )
-
-
-def render_kindle_summary(windows: list) -> str:
-    if not windows:
-        return "No Kindle windows detected."
-
-    primary = windows[0]
-    lines = [
-        f"Detected {len(windows)} Kindle window(s).",
-        f"Primary window: id={primary.window_id} title={primary.title or '<untitled>'} size={primary.width}x{primary.height}",
-    ]
-    if len(windows) > 1:
-        for window in windows[1:]:
-            lines.append(
-                f"Candidate: id={window.window_id} title={window.title or '<untitled>'} size={window.width}x{window.height}"
-            )
-    return "\n".join(lines)
-
-
-def render_key_probe_result(result) -> str:
-    lines = [
-        f"Key: {result.key_name} ({result.key_code})",
-        f"Transport: {result.transport}",
-        f"Frontmost before: {result.frontmost_before or 'unknown'}",
-        f"Frontmost after: {result.frontmost_after or 'unknown'}",
-        f"Baseline: {Path(result.baseline_path)}",
-        f"Candidate: {Path(result.candidate_path)}",
-        f"Content diff: {result.diff_score:.4f}",
-    ]
-    return "\n".join(lines)
-
-
-def render_capture_run_result(result) -> str:
-    lines = [
-        f"Captured {len(result.saved_paths)} page(s).",
-        f"Key: {result.key_name} ({result.key_code})",
-        f"Transport: {result.transport}",
-        f"Output directory: {result.output_dir}",
-    ]
-    if result.stop_reason:
-        lines.append(f"Stop reason: {result.stop_reason}")
-    if result.saved_paths:
-        lines.append(f"First file: {result.saved_paths[0].name}")
-        lines.append(f"Last file: {result.saved_paths[-1].name}")
-    return "\n".join(lines)
-
-
-def render_ocr_run_result(result) -> str:
-    lines = [
-        f"OCR completed for {len(result.pages)} page(s).",
-        f"Provider: {result.provider}",
-        f"Language: {result.language}",
-        f"Raw directory: {result.raw_dir}",
-        f"Normalized directory: {result.normalized_dir}",
-        f"Combined text: {result.combined_path}",
-    ]
-    return "\n".join(lines)
-
-
-def render_tts_run_result(result) -> str:
-    lines = [
-        f"TTS completed for {len(result.chunks)} chunk(s).",
-        f"Speaker: {result.speaker}",
-        f"Base URL: {result.base_url}",
-        f"Chunks directory: {result.chunks_dir}",
-        f"WAV directory: {result.wav_dir}",
-        f"Manifest: {result.manifest_path}",
-    ]
-    return "\n".join(lines)
-
-
-def render_merge_run_result(result) -> str:
-    lines = [
-        f"Merged {result.input_count} WAV file(s).",
-        f"Merged WAV: {result.merged_wav_path}",
-        f"Output audio: {result.output_audio_path}",
-        f"Format: {result.output_format}",
-    ]
-    return "\n".join(lines)
 
 
 if __name__ == "__main__":

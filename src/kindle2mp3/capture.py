@@ -237,57 +237,6 @@ def compute_content_difference(left_path: str | Path, right_path: str | Path, *,
         stat = ImageStat.Stat(diff)
         return float(stat.mean[0]) / 255.0
 
-
-def post_left_click(x: int, y: int) -> None:
-    move_event = Quartz.CGEventCreateMouseEvent(
-        None,
-        Quartz.kCGEventMouseMoved,
-        (x, y),
-        Quartz.kCGMouseButtonLeft,
-    )
-    down_event = Quartz.CGEventCreateMouseEvent(
-        None,
-        Quartz.kCGEventLeftMouseDown,
-        (x, y),
-        Quartz.kCGMouseButtonLeft,
-    )
-    up_event = Quartz.CGEventCreateMouseEvent(
-        None,
-        Quartz.kCGEventLeftMouseUp,
-        (x, y),
-        Quartz.kCGMouseButtonLeft,
-    )
-    Quartz.CGEventPost(Quartz.kCGHIDEventTap, move_event)
-    Quartz.CGEventPost(Quartz.kCGHIDEventTap, down_event)
-    Quartz.CGEventPost(Quartz.kCGHIDEventTap, up_event)
-
-
-def compute_click_point(
-    window: WindowInfo,
-    *,
-    side: str,
-    columns: int = 8,
-) -> tuple[int, int]:
-    if side not in {"left", "right"}:
-        raise ValueError(f"Unsupported side: {side}")
-    if columns <= 1:
-        raise ValueError("columns must be greater than one")
-
-    column_width = window.width / columns
-    y = int(window.bounds["Y"] + (window.height / 2))
-    if side == "left":
-        x = int(window.bounds["X"] + (column_width / 2))
-    else:
-        x = int(window.bounds["X"] + window.width - (column_width / 2))
-    return x, y
-
-
-def click_window_point(window: WindowInfo, *, side: str) -> tuple[int, int]:
-    x, y = compute_click_point(window, side=side)
-    post_left_click(x, y)
-    return x, y
-
-
 def build_page_filename(page_number: int) -> str:
     return f"page_{page_number:06d}.png"
 
