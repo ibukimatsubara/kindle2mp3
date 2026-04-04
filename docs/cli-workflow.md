@@ -1,394 +1,139 @@
 # kindle2mp3 CLI Workflow
 
-## Goal
+## パイプライン
 
-このドキュメントは、利用者が CLI だけで `capture -> ocr -> tts -> merge` を順番に実行できる運用フローを定義する。
-
-前提:
-
-- 利用者は対象アプリを自分で開く
-- 利用者は対象書籍の読み上げ開始位置まで自分で移動する
-- 以降の処理は CLI で段階的に実行する
-- 各処理はセッション単位で管理する
-
-## User Flow
-
-利用者の想定手順は以下。
-
-1. 対象アプリを開く
-2. 対象書籍を開く
-3. 読み上げを開始したいページに移動する
-4. `run` を実行して最後まで処理する
-5. 必要なら個別ステップを再実行する
-
-この設計では、`run` を主導線にしつつ、各ステップを独立コマンドでも実行できるようにする。
-
-理由:
-
-- 途中で失敗しても途中から再開しやすい
-- OCR や TTS のパラメータを後から調整しやすい
-- キャプチャ済みデータを何度でも再利用できる
-
-## Session Model
-
-1 冊ごと、または 1 回の作業単位ごとに `workspace` 下へセッションフォルダを作る。
-
-命名規則の初期案:
-
-- `book_0001`
-- `book_0002`
-- `book_0003`
-
-将来的に人間が判別しやすい別名を持たせる場合は、メタデータに書名を保存する。
-ディレクトリ名は CLI や自動処理に優しい固定フォーマットを維持する。
-
-## Directory Layout
-
-```text
-workspace/
-  book_0001/
-    session.json
-    capture/
-      raw/
-        page_000001.png
-        page_000002.png
-      debug/
-    ocr/
-      raw/
-        page_000001.json
-        page_000002.json
-      normalized/
-        page_000001.txt
-        page_000002.txt
-      combined.txt
-    tts/
-      chunks/
-        chunk_000001.txt
-        chunk_000002.txt
-      wav/
-        chunk_000001.wav
-        chunk_000002.wav
-      manifest.json
-    output/
-      audiobook.mp3
-    logs/
-      capture.log
-      ocr.log
-      tts.log
-      merge.log
+```
+capture → layout → ocr → clean → llm-fix → tts → merge
 ```
 
-## Session Metadata
+各ステップはセッション単位で管理される。中間成果物はすべて保存され、途中から再実行できる。
 
-各セッションのルートには `session.json` を置く。
-
-最低限、以下の情報を持たせる。
-
-```json
-{
-  "session_id": "book_0001",
-  "title": null,
-  "created_at": "2026-03-31T12:00:00+09:00",
-  "status": "capture_pending",
-  "capture": {
-    "direction": null,
-    "page_count": 0,
-    "image_format": "png"
-  },
-  "ocr": {
-    "provider": "tesseract",
-    "languages": ["jpn", "jpn_vert"]
-  },
-  "tts": {
-    "provider": "voicevox",
-    "speaker": null
-  },
-  "output": {
-    "mp3_path": null
-  }
-}
-```
-
-## Workflow Design
-
-### Step 1: Create Session
-
-新しい作業開始時にセッションを作る。
-
-コマンド案:
+## 1コマンド実行
 
 ```bash
-kindle2mp3 session create --title "Book Name"
+uv run kindle2mp3 run --title "本のタイトル"
 ```
 
-期待動作:
+全7ステップが順に実行される。進捗は `[1/7] capture: Capturing pages...` の形式で表示される。
 
-- `workspace` がなければ作成する
-- 次の連番を採番する
-- `book_000X` ディレクトリを作る
-- サブディレクトリを初期化する
-- `session.json` を作る
+## 各ステップの詳細
 
-出力例:
+### 1. capture — ページキャプチャ
 
-```text
-Created session: book_0001
-Path: workspace/book_0001
-```
-
-### Step 2: Run Full Pipeline
-
-通常は 1 コマンドで最後まで実行する。
+Kindle ウィンドウを検出し、キー入力でページ送りしながらスクリーンショットを保存する。
 
 ```bash
-kindle2mp3 run --title "Book Name"
+uv run kindle2mp3 capture run --session book_0001
 ```
 
-既存セッションを使う場合:
+- `--key auto` (デフォルト): →キーと←キーを試して横書き/縦書きを自動判定
+- `--key left|right`: 手動指定
+- `--pages N`: ページ数上限。未指定時は差分なし4回で自動停止
+- `--settle-delay`: ページ送り後の待ち時間 (デフォルト: 1.0秒)
+
+出力: `capture/raw/page_000001.png` ...
+
+### 2. layout — レイアウト検出
+
+DocLayout-YOLO でページ画像の構造を分析し、本文領域 (plain text, title) を特定する。ヘッダ、フッタ、図、ページ番号は除外される。
 
 ```bash
-kindle2mp3 run --session book_0001
+uv run kindle2mp3 layout run --session book_0001
 ```
 
-既定値:
+- 縦書きページは自動的に90度回転してから検出し、座標を逆変換する
+- 検出結果はページ単位の JSON として保存
 
-- `--key right`
-- `--transport system_events`
-- `--speaker 58`
-- `--pages` 未指定時は、差分なしが 4 回連続したら停止
+出力: `layout/page_000001.json` ...
 
-### Step 3: Capture Pages
+### 3. ocr — 文字認識
 
-利用者が対象書籍を開いた後で実行する。
-
-コマンド案:
+PaddleOCR で本文領域のみを OCR する。非本文領域は白塗りマスクで除外される。
 
 ```bash
-kindle2mp3 capture run --session book_0001
+uv run kindle2mp3 ocr run --session book_0001
 ```
 
-#### Page Turn Handling
+- layout の結果を参照し、本文領域だけを残した画像で OCR
+- 縦書きの場合は行の読み順を右→左・上→下に変更
+- layout がない場合はフォールバックとして全体を OCR
 
-初期版では、ページ送りはクリックではなくキーボード方式を使う。
+出力: `ocr/raw/page_000001.json`, `ocr/text/page_000001.txt`
 
-採用方式:
+### 4. clean — テキスト正規化
 
-- 前面化: `AppleScript`
-- キー送信: `System Events key code`
-
-個別実行の例:
+正規表現ベースで OCR 誤字を修正し、行折り返しを文単位に結合する。
 
 ```bash
-kindle2mp3 capture run --session book_0001 --key right
+uv run kindle2mp3 clean run --session book_0001
 ```
 
-方向とキーの対応は次を基本とする。
+修正内容:
+- カタカナ長音 (`チ一ム → チーム`)
+- 類似文字 (`ソ→ン`, `ツ→ッ`, `ヅエ→ジェ`)
+- OCR の行折り返しを `。！？` 区切りで文に結合
+- 全ページを連結して `combined.txt` を生成
 
-- `right` -> `key code 124`
-- `left` -> `key code 123`
+出力: `ocr/clean/page_000001.txt`, `ocr/combined.txt`
 
-ページ送り方向は次の 2 案がある。
+### 5. llm-fix — LLM による整形
 
-案 A:
-
-- 利用者が明示指定する
+Gemini API を使い、OCR テキストを読み上げ用に整形する。
 
 ```bash
-kindle2mp3 capture run --session book_0001 --direction right
-kindle2mp3 capture run --session book_0001 --direction left
+uv run kindle2mp3 llm-fix run --session book_0001
 ```
 
-案 B:
+- ページ単位のスライディングウィンドウ (4ページずつ) で処理
+- ウィンドウ単位で中間結果を保存し、途中停止しても再開可能
+- OCR 誤字修正、行折り返し結合、見出し空行挿入、不要記号除去
 
-- システムが自動推定する
+出力: `ocr/llm_windows/window_0001.txt` ..., `ocr/llm_fixed.txt`
 
-ただし初期版では自動推定より、利用者指定の方が堅い。
+`GEMINI_API_KEY` 環境変数が必要 (`.env` に記載)。
 
-理由:
+### 6. tts — 音声合成
 
-- 読書アプリの表示モード差分が大きい
-- 誤判定すると最初からキャプチャをやり直す可能性がある
-- CLI では明示指定の方がデバッグしやすい
-
-初期採用方針:
-
-- `--key right|left` を利用者指定にする
-- メインの入力経路は `system_events`
-- `cgevent` はデバッグ用の補助とする
-
-#### Stop Condition
-
-既定では、ページ差分が連続 4 回出なかったら自動停止する。
-
-必要なら上限ページ数も指定できる。
+VOICEVOX で チャンク単位に音声を生成する。
 
 ```bash
-kindle2mp3 capture run --session book_0001 --pages 120
+uv run kindle2mp3 tts run --session book_0001 --speaker 58
 ```
 
-ただし初期版は `--pages` を優先採用する。
+- `combined.txt` を文単位でチャンク分割
+- 各チャンクを VOICEVOX HTTP API で WAV に変換
 
-理由:
+出力: `tts/chunks/chunk_000001.txt`, `tts/wav/chunk_000001.wav`, `tts/manifest.json`
 
-- 実装が簡単
-- 終了判定が明確
-- 同一ページ検出は後から追加しやすい
+### 7. merge — 音声結合
 
-#### Capture Responsibilities
-
-`capture` の責務:
-
-- 対象ウィンドウの取得
-- 前面化
-- 現在ページを `png` で保存
-- `System Events key code` によるページ送り
-- これを指定回数だけ繰り返す
-
-保存規則:
-
-- `capture/raw/page_000001.png`
-- `capture/raw/page_000002.png`
-
-### Step 3: OCR
-
-キャプチャ済み画像に対して OCR を実行する。
-
-コマンド案:
+WAV ファイルを結合して最終 MP3 を生成する。
 
 ```bash
-kindle2mp3 ocr run --session book_0001
+uv run kindle2mp3 merge run --session book_0001
 ```
 
-初期方針:
+- チャンク間に 300ms の無音を挿入
+- ffmpeg で MP3 変換 (フォールバック: afconvert で M4A)
 
-- 対象画像を順番に読む
-- 各画像の向きを判定または指定する
-- `jpn` / `jpn_vert` を使い分ける
-- 生 OCR 結果を JSON で保存する
-- 正規化後テキストを TXT で保存する
-- 最後に全文連結版を `ocr/combined.txt` に保存する
+出力: `output/audiobook.mp3`
 
-オプション候補:
+## セッション管理
 
 ```bash
-kindle2mp3 ocr run --session book_0001 --orientation auto
-kindle2mp3 ocr run --session book_0001 --orientation vertical
-kindle2mp3 ocr run --session book_0001 --orientation horizontal
+uv run kindle2mp3 session create --title "Book Name"
+uv run kindle2mp3 session list
+uv run kindle2mp3 session show --session book_0001 --json
 ```
 
-初期採用方針:
+セッション状態は `session.json` に記録される。各ステップ完了時に `status` が更新される:
 
-- `--orientation auto` を既定
-- 必要なら固定指定で再実行できるようにする
-
-### Step 4: TTS
-
-OCR 後のテキストから音声を作る。
-
-コマンド案:
-
-```bash
-kindle2mp3 tts run --session book_0001 --speaker 3
+```
+capture_pending → capture_completed → layout_completed → ocr_completed
+→ clean_completed → llm_fix_completed → tts_completed → merge_completed
 ```
 
-責務:
+## 再開性
 
-- `combined.txt` もしくは正規化済みテキスト群を読む
-- 文または段落単位でチャンク分割する
-- `tts/chunks/*.txt` を作る
-- `VOICEVOX` に投入して `tts/wav/*.wav` を作る
-- チャンク対応表を `tts/manifest.json` に保存する
-
-初期採用方針:
-
-- 入力は `ocr/combined.txt`
-- 文単位チャンクを基本にする
-- 再実行時は既存 `wav` を再利用できる設計にする
-
-### Step 5: Merge
-
-生成済みの `wav` を結合して最終成果物を作る。
-
-コマンド案:
-
-```bash
-kindle2mp3 merge run --session book_0001
-```
-
-責務:
-
-- `tts/wav/*.wav` を順番に読む
-- 一時ファイルまたは concat manifest を作る
-- `ffmpeg` で結合する
-- `output/audiobook.mp3` を生成する
-
-## CLI Shape
-
-コマンド体系はサブコマンド方式にする。
-
-```bash
-kindle2mp3 session create
-kindle2mp3 session list
-kindle2mp3 session show --session book_0001
-
-kindle2mp3 capture run --session book_0001 --key right --pages 120
-kindle2mp3 ocr run --session book_0001
-kindle2mp3 tts run --session book_0001 --speaker 3
-kindle2mp3 merge run --session book_0001
-```
-
-この構成の利点:
-
-- ステップの責務が明確
-- 自動化しやすい
-- ログや再開制御を入れやすい
-
-## Resume Strategy
-
-再開性は CLI ツールとして重要。
-
-初期方針:
-
-- 既存成果物があればスキップできる
-- `--force` 指定時だけ上書きする
-
-例:
-
-```bash
-kindle2mp3 ocr run --session book_0001
-kindle2mp3 ocr run --session book_0001 --force
-```
-
-## Logging
-
-各ステップは個別ログを持つ。
-
-- `logs/capture.log`
-- `logs/ocr.log`
-- `logs/tts.log`
-- `logs/merge.log`
-
-CLI 標準出力には進捗を簡潔に出し、詳細はログへ保存する。
-
-## Recommended Initial Decisions
-
-初期版で先に決めてよい内容:
-
-- セッション ID は `book_0001` 形式
-- `workspace` 配下に全成果物を集約
-- `capture` は `--key` を利用者指定
-- `capture` の終了条件は `--pages` 指定
-- `ocr` は `--orientation auto` を既定
-- `tts` は `combined.txt` を入力にする
-- `merge` は `wav` から `mp3` を作る
-- すべて CLI サブコマンドとして実装する
-
-## Open Questions
-
-後続で決めるべき論点:
-
-- `capture` の対象ウィンドウはタイトル一致で取るか、前面ウィンドウ固定にするか
-- OCR の向き判定をどこまで自動化するか
-- TTS のチャンク長を文単位にするか、一定文字数にするか
-- 最終 MP3 名を固定にするか、書名由来にするか
-- セッション ID 採番を単純連番にするか、日付を含めるか
+- llm-fix はウィンドウ単位でキャッシュ。途中で止まっても再実行で続きから処理
+- 各ステップの中間成果物はすべて保存。個別ステップの再実行が可能
