@@ -144,22 +144,30 @@ class VoicevoxTtsRunner:
         if skipped > 0:
             print(f"  tts: skipped {skipped} already-synthesized chunk(s)", flush=True)
 
-        # Synthesize pending chunks in parallel
+        # Synthesize pending chunks in parallel with retry
+        import time as _time
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        def _synth(plan: tuple[int, str, Path, Path]) -> tuple[int, bytes]:
-            idx, text, _, _ = plan
-            wav_bytes = self._synthesize(text, speaker=speaker)
-            return idx, wav_bytes
+        max_retries = 3
+
+        def _synth(plan: tuple[int, str, Path, Path]) -> tuple[int, Path, bytes]:
+            idx, text, _, wp = plan
+            for attempt in range(max_retries):
+                try:
+                    wav_bytes = self._synthesize(text, speaker=speaker)
+                    return idx, wp, wav_bytes
+                except Exception:
+                    if attempt == max_retries - 1:
+                        raise
+                    _time.sleep(2 ** attempt)
 
         completed = skipped
-        max_workers = min(4, len(pending)) if pending else 1
+        max_workers = min(2, len(pending)) if pending else 1
 
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(_synth, plan): plan for plan in pending}
+            futures = {pool.submit(_synth, plan): plan[0] for plan in pending}
             for future in as_completed(futures):
-                idx, wav_bytes = future.result()
-                _, _, _, wav_path = next(p for p in pending if p[0] == idx)
+                idx, wav_path, wav_bytes = future.result()
                 wav_path.write_bytes(wav_bytes)
                 completed += 1
                 print(f"  tts chunk {completed}/{total_chunks}", flush=True)
