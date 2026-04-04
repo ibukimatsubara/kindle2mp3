@@ -240,6 +240,67 @@ def compute_content_difference(left_path: str | Path, right_path: str | Path, *,
         stat = ImageStat.Stat(diff)
         return float(stat.mean[0]) / 255.0
 
+KEY_CODES = {"left": 123, "right": 124, "space": 49}
+
+
+@dataclass(slots=True)
+class KeyDetectionResult:
+    key_name: str
+    key_code: int
+    orientation: str  # "horizontal" or "vertical"
+
+
+class KeyAutoDetector:
+    """Detect page turn direction by trying both keys."""
+
+    def __init__(self, *, settle_delay: float = 1.5, transport: str = "system_events", min_diff: float = 0.01) -> None:
+        self.capture = WindowCapture()
+        self.settle_delay = settle_delay
+        self.transport = transport
+        self.min_diff = min_diff
+
+    def detect(self, window: WindowInfo, output_dir: str | Path) -> KeyDetectionResult:
+        directory = Path(output_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+
+        activate_kindle()
+        time.sleep(0.4)
+
+        baseline = self.capture.save_window_screenshot(window, directory / "detect_baseline.png")
+
+        # Try right key first (horizontal / left-to-right)
+        print("  auto-detect: trying right key...", flush=True)
+        post_key_press(KEY_CODES["right"], transport=self.transport)
+        time.sleep(self.settle_delay)
+        after_right = self.capture.save_window_screenshot(window, directory / "detect_after_right.png")
+        diff_right = compute_content_difference(baseline, after_right)
+        print(f"  auto-detect: right key diff={diff_right:.4f}", flush=True)
+
+        if diff_right >= self.min_diff:
+            # Right key worked → horizontal → go back with left key
+            post_key_press(KEY_CODES["left"], transport=self.transport)
+            time.sleep(self.settle_delay)
+            print("  auto-detect: horizontal (right key)", flush=True)
+            return KeyDetectionResult(key_name="right", key_code=KEY_CODES["right"], orientation="horizontal")
+
+        # Right didn't work, try left key (vertical / right-to-left)
+        print("  auto-detect: trying left key...", flush=True)
+        post_key_press(KEY_CODES["left"], transport=self.transport)
+        time.sleep(self.settle_delay)
+        after_left = self.capture.save_window_screenshot(window, directory / "detect_after_left.png")
+        diff_left = compute_content_difference(baseline, after_left)
+        print(f"  auto-detect: left key diff={diff_left:.4f}", flush=True)
+
+        if diff_left >= self.min_diff:
+            # Left key worked → vertical → go back with right key
+            post_key_press(KEY_CODES["right"], transport=self.transport)
+            time.sleep(self.settle_delay)
+            print("  auto-detect: vertical (left key)", flush=True)
+            return KeyDetectionResult(key_name="left", key_code=KEY_CODES["left"], orientation="vertical")
+
+        raise RuntimeError("Could not detect page turn direction: neither left nor right key changed the page")
+
+
 def build_page_filename(page_number: int) -> str:
     return f"page_{page_number:06d}.png"
 

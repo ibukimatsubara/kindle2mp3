@@ -70,6 +70,7 @@ def run_ocr_stage(*, manager: SessionManager, session: Session, lang: str):
     if not image_paths:
         raise RuntimeError("no captured PNG files found for session")
 
+    orientation = session.metadata.get("orientation", "horizontal")
     runner = PaddleOcrRunner(lang=lang)
     result = runner.run_for_session(
         session_id=session.session_id,
@@ -77,6 +78,7 @@ def run_ocr_stage(*, manager: SessionManager, session: Session, lang: str):
         layout_dir=manager.layout_dir(session),
         raw_dir=manager.ocr_raw_dir(session),
         text_dir=manager.ocr_text_dir(session),
+        orientation=orientation,
     )
 
     session.metadata["status"] = "ocr_completed"

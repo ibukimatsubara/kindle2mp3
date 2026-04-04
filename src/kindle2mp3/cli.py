@@ -64,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--session", help="Existing session id, e.g. book_0001")
     run_parser.add_argument("--title", help="Session title when creating a new session")
     run_parser.add_argument("--window-id", type=int, help="Explicit macOS window id")
-    run_parser.add_argument("--key", choices=("left", "right", "space"), default=DEFAULT_KEY)
+    run_parser.add_argument("--key", choices=("auto", "left", "right", "space"), default=DEFAULT_KEY)
     run_parser.add_argument(
         "--transport",
         choices=("system_events", "cgevent"),
@@ -185,7 +185,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser = capture_subparsers.add_parser("run", help="Capture multiple pages with keyboard page turns")
     run_parser.add_argument("--window-id", type=int, help="Explicit macOS window id")
     run_parser.add_argument("--session", help="Session id. When set, output goes to workspace/<session>/capture/raw")
-    run_parser.add_argument("--key", choices=("left", "right", "space"), default=DEFAULT_KEY)
+    run_parser.add_argument("--key", choices=("auto", "left", "right", "space"), default=DEFAULT_KEY)
     run_parser.add_argument(
         "--transport",
         choices=("system_events", "cgevent"),
@@ -265,12 +265,42 @@ def handle_run(args: argparse.Namespace) -> int:
 
     print(f"Session: {session.session_id}", flush=True)
 
+    # Resolve key direction
+    key = args.key
+    orientation = "horizontal"
+    if key == "auto":
+        from kindle2mp3.capture import KeyAutoDetector
+        try:
+            detector_window = resolve_target_window(
+                MacOSWindowDetector(), args.window_id,
+            )
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print("[0/7] auto-detect: Detecting page turn direction...", flush=True)
+        try:
+            auto_detector = KeyAutoDetector(
+                settle_delay=args.settle_delay, transport=args.transport,
+            )
+            detection = auto_detector.detect(
+                detector_window, manager.capture_raw_dir(session) / ".." / "debug",
+            )
+            key = detection.key_name
+            orientation = detection.orientation
+        except RuntimeError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        print(f"[0/7] auto-detect: {orientation} (key={key})", flush=True)
+
+    session.metadata["orientation"] = orientation
+    manager.save(session)
+
     steps = [
         (0, argparse.Namespace(
             capture_command="run",
             window_id=args.window_id,
             session=session.session_id,
-            key=args.key,
+            key=key,
             transport=args.transport,
             output_dir=None,
             pages=args.pages,
@@ -622,7 +652,18 @@ def handle_capture(args: argparse.Namespace) -> int:
         return 0
 
     if args.capture_command == "run":
-        key_name, key_code = resolve_key_spec(args.key)
+        if args.key == "auto":
+            from kindle2mp3.capture import KeyAutoDetector
+            auto_det = KeyAutoDetector(settle_delay=args.settle_delay, transport=args.transport)
+            try:
+                detection = auto_det.detect(window, str(Path(args.output_dir or ".") / ".detect"))
+            except RuntimeError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+            key_name, key_code = detection.key_name, detection.key_code
+            print(f"Auto-detected: {detection.orientation} (key={key_name})", flush=True)
+        else:
+            key_name, key_code = resolve_key_spec(args.key)
         runner = PageCaptureRunner(settle_delay=args.settle_delay, transport=args.transport)
         session = None
         if args.session:

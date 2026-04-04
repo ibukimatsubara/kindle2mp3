@@ -63,6 +63,7 @@ class PaddleOcrRunner:
         layout_dir: str | Path,
         raw_dir: str | Path,
         text_dir: str | Path,
+        orientation: str = "horizontal",
     ) -> OcrRunResult:
         raw_dir_path = Path(raw_dir)
         text_dir_path = Path(text_dir)
@@ -83,6 +84,7 @@ class PaddleOcrRunner:
 
             result = self._run_single_page(
                 image_path, body_regions, raw_dir_path, text_dir_path,
+                orientation=orientation,
             )
             pages.append(result)
 
@@ -101,35 +103,39 @@ class PaddleOcrRunner:
         body_regions: list[LayoutRegion],
         raw_dir: Path,
         text_dir: Path,
+        orientation: str = "horizontal",
     ) -> OcrPageResult:
         region_results: list[OcrRegionResult] = []
+        sort_key = _line_sort_key(orientation)
 
         if not body_regions:
-            # fallback: OCR the whole image
             lines = self._ocr_image(image_path)
+            lines.sort(key=sort_key)
             text = "\n".join(line["text"] for line in lines).strip()
             region_results.append(OcrRegionResult(
                 region_index=0, label="full_page", bbox=(0, 0, 0, 0),
                 lines=lines, text=text,
             ))
         else:
-            # Mask non-body regions white, then OCR the full page.
-            # This preserves page-level context (font size, line spacing)
-            # that PaddleOCR uses for accurate recognition.
             masked = _mask_non_body(image_path, body_regions)
             all_lines = self._ocr_pil_image(masked)
 
-            # Assign each OCR line to the nearest body region (no duplicates)
             assigned = _assign_lines_to_regions(all_lines, body_regions)
             for i, region in enumerate(body_regions):
                 region_lines = assigned.get(i, [])
+                region_lines.sort(key=sort_key)
                 text = "\n".join(line["text"] for line in region_lines).strip()
                 region_results.append(OcrRegionResult(
                     region_index=i, label=region.label,
                     bbox=region.bbox, lines=region_lines, text=text,
                 ))
 
-        # combine all region texts in reading order (already sorted by layout)
+        # Sort regions in reading order
+        if orientation == "vertical":
+            region_results.sort(key=lambda r: (-r.bbox[2], r.bbox[1]))  # right-to-left, top-to-bottom
+        else:
+            region_results.sort(key=lambda r: (r.bbox[1], r.bbox[0]))  # top-to-bottom, left-to-right
+
         page_text = "\n".join(r.text for r in region_results if r.text).strip()
 
         stem = image_path.stem
@@ -283,6 +289,24 @@ def _assign_lines_to_regions(
             assigned[best_idx].append(line)
 
     return assigned
+
+
+def _line_sort_key(orientation: str):
+    """Return a sort key function for OCR lines based on text orientation."""
+    def _box_center(line: dict) -> tuple[float, float]:
+        box = line.get("box")
+        if not box or not isinstance(box[0], (list, tuple)):
+            return (0.0, 0.0)
+        cx = sum(p[0] for p in box) / len(box)
+        cy = sum(p[1] for p in box) / len(box)
+        return (cx, cy)
+
+    if orientation == "vertical":
+        # Right-to-left, top-to-bottom
+        return lambda line: (-_box_center(line)[0], _box_center(line)[1])
+    else:
+        # Top-to-bottom, left-to-right
+        return lambda line: (_box_center(line)[1], _box_center(line)[0])
 
 
 def _line_center_in_bbox(line: dict, bbox: tuple[int, int, int, int]) -> bool:
