@@ -329,7 +329,9 @@ def handle_run(args: argparse.Namespace) -> int:
         (4, argparse.Namespace(
             llm_fix_command="run",
             session=session.session_id,
-            model="gemini-2.5-flash-lite",
+            backend="gemini",
+            model=None,
+            ollama_url="http://localhost:11434",
             json=False,
         ), handle_llm_fix),
         (5, argparse.Namespace(
