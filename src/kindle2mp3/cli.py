@@ -20,6 +20,7 @@ from kindle2mp3.pipeline import (
     run_capture_stage,
     run_clean_stage,
     run_layout_stage,
+    run_llm_fix_stage,
     run_merge_stage,
     run_ocr_stage,
     run_tts_stage,
@@ -118,6 +119,16 @@ def build_parser() -> argparse.ArgumentParser:
     clean_run.add_argument("--session", required=True, help="Session id, e.g. book_0001")
     clean_run.add_argument("--json", action="store_true", help="Emit JSON instead of text")
 
+    llm_fix_parser = subparsers.add_parser("llm-fix", help="Fix OCR text using local LLM")
+    llm_fix_subparsers = llm_fix_parser.add_subparsers(dest="llm_fix_command", required=True)
+
+    llm_fix_run = llm_fix_subparsers.add_parser("run", help="Run LLM fix for a session")
+    llm_fix_run.add_argument("--session", required=True, help="Session id, e.g. book_0001")
+    llm_fix_run.add_argument("--model", default="gemma3:4b", help="Ollama model name")
+    llm_fix_run.add_argument("--ollama-url", default="http://localhost:11434", help="Ollama base URL")
+    llm_fix_run.add_argument("--context-lines", type=int, default=3, help="Context lines before/after target")
+    llm_fix_run.add_argument("--json", action="store_true", help="Emit JSON instead of text")
+
     tts_parser = subparsers.add_parser("tts", help="Run TTS for OCR text")
     tts_subparsers = tts_parser.add_subparsers(dest="tts_command", required=True)
 
@@ -197,6 +208,8 @@ def main(argv: list[str] | None = None) -> int:
         return handle_ocr(args)
     if args.command == "clean":
         return handle_clean(args)
+    if args.command == "llm-fix":
+        return handle_llm_fix(args)
     if args.command == "tts":
         return handle_tts(args)
     if args.command == "merge":
@@ -265,7 +278,20 @@ def handle_run(args: argparse.Namespace) -> int:
     if clean_status != 0:
         return clean_status
 
-    # 5. tts
+    # 5. llm-fix
+    namespace_llm_fix = argparse.Namespace(
+        llm_fix_command="run",
+        session=session.session_id,
+        model="gemma3:4b",
+        ollama_url="http://localhost:11434",
+        context_lines=3,
+        json=False,
+    )
+    llm_fix_status = handle_llm_fix(namespace_llm_fix)
+    if llm_fix_status != 0:
+        return llm_fix_status
+
+    # 6. tts
     namespace_tts = argparse.Namespace(
         tts_command="run",
         session=session.session_id,
@@ -452,6 +478,38 @@ def handle_clean(args: argparse.Namespace) -> int:
     else:
         print(f"Cleaned {len(result.pages)} page(s).")
         print(f"Combined text: {result.combined_path}")
+    return 0
+
+
+def handle_llm_fix(args: argparse.Namespace) -> int:
+    if args.llm_fix_command != "run":
+        print(f"error: unknown llm-fix subcommand: {args.llm_fix_command}", file=sys.stderr)
+        return 2
+
+    manager = SessionManager()
+    try:
+        session = manager.load(args.session)
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        result = run_llm_fix_stage(
+            manager=manager,
+            session=session,
+            model=args.model,
+            base_url=args.ollama_url,
+            context_lines=args.context_lines,
+        )
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+    else:
+        print(f"LLM fix: {result.sentence_count} sentence(s), {result.changed_count} changed.")
+        print(f"Fixed text: {result.fixed_path}")
     return 0
 
 

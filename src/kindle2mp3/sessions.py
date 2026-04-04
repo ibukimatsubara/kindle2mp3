@@ -102,6 +102,9 @@ class SessionManager:
     def ocr_combined_path(self, session: Session) -> Path:
         return session.root / "ocr" / "combined.txt"
 
+    def llm_fixed_path(self, session: Session) -> Path:
+        return session.root / "ocr" / "llm_fixed.txt"
+
     def tts_chunks_dir(self, session: Session) -> Path:
         return session.root / "tts" / "chunks"
 

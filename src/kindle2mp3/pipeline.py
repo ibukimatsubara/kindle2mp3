@@ -107,6 +107,40 @@ def run_clean_stage(*, manager: SessionManager, session: Session):
     return result
 
 
+def run_llm_fix_stage(
+    *,
+    manager: SessionManager,
+    session: Session,
+    model: str = "gemma3:4b",
+    base_url: str = "http://localhost:11434",
+    context_lines: int = 3,
+):
+    from kindle2mp3.llm_fix import LlmFixer, OllamaManager
+
+    ollama = OllamaManager()
+    try:
+        ollama.ensure_running(base_url)
+        fixer = LlmFixer(
+            model=model, base_url=base_url, context_lines=context_lines,
+        )
+        result = fixer.run_for_session(
+            session_id=session.session_id,
+            combined_path=manager.ocr_combined_path(session),
+            fixed_path=manager.llm_fixed_path(session),
+        )
+    finally:
+        ollama.stop()
+
+    session.metadata["status"] = "llm_fix_completed"
+    llm_meta = session.metadata.setdefault("llm_fix", {})
+    if isinstance(llm_meta, dict):
+        llm_meta["model"] = model
+        llm_meta["sentence_count"] = result.sentence_count
+        llm_meta["changed_count"] = result.changed_count
+    manager.save(session)
+    return result
+
+
 def run_tts_stage(
     *,
     manager: SessionManager,
