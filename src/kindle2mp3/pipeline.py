@@ -46,11 +46,13 @@ def run_layout_stage(*, manager: SessionManager, session: Session):
     if not image_paths:
         raise RuntimeError("no captured PNG files found for session")
 
+    orientation = session.metadata.get("orientation", "horizontal")
     detector = DocLayoutDetector()
     result = detector.run_for_session(
         session_id=session.session_id,
         image_paths=image_paths,
         layout_dir=manager.layout_dir(session),
+        orientation=orientation,
     )
 
     session.metadata["status"] = "layout_completed"

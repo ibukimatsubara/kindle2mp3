@@ -81,21 +81,58 @@ class DocLayoutDetector:
             self._model = YOLOv10(filepath)
         return self._model
 
-    def detect(self, image_path: str | Path) -> list[LayoutRegion]:
+    def detect(self, image_path: str | Path, *, orientation: str = "horizontal") -> list[LayoutRegion]:
+        from PIL import Image
+        import tempfile
+
         model = self._get_model()
-        results = model.predict(str(image_path), imgsz=1024, conf=self.conf)
-        regions: list[LayoutRegion] = []
-        for result in results:
-            for bbox in result.boxes:
-                xyxy = bbox.xyxy[0].tolist()
-                cls_id = int(bbox.cls[0])
-                score = float(bbox.conf[0])
-                label = result.names[cls_id]
-                regions.append(LayoutRegion(
-                    label=label,
-                    score=score,
-                    bbox=(int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])),
-                ))
+
+        if orientation == "vertical":
+            # Rotate 90° clockwise so vertical text looks horizontal
+            with Image.open(image_path) as img:
+                orig_w, orig_h = img.size
+                rotated = img.rotate(-90, expand=True)
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                    rotated.save(tmp.name)
+                    tmp_path = tmp.name
+
+            results = model.predict(tmp_path, imgsz=1024, conf=self.conf)
+            Path(tmp_path).unlink(missing_ok=True)
+
+            regions: list[LayoutRegion] = []
+            for result in results:
+                for bbox in result.boxes:
+                    xyxy = bbox.xyxy[0].tolist()
+                    cls_id = int(bbox.cls[0])
+                    score = float(bbox.conf[0])
+                    label = result.names[cls_id]
+                    # Reverse the 90° CW rotation on bbox coordinates
+                    # Rotated image: (orig_h, orig_w)
+                    # Mapping: rotated (rx1, ry1, rx2, ry2) -> original (oy1, oh-rx2, oy2, oh-rx1)
+                    #   where oh = orig_h (= rotated width)
+                    rx1, ry1, rx2, ry2 = int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])
+                    ox1 = ry1
+                    oy1 = orig_w - rx2
+                    ox2 = ry2
+                    oy2 = orig_w - rx1
+                    regions.append(LayoutRegion(
+                        label=label, score=score,
+                        bbox=(ox1, max(0, oy1), ox2, max(0, oy2)),
+                    ))
+        else:
+            results = model.predict(str(image_path), imgsz=1024, conf=self.conf)
+            regions: list[LayoutRegion] = []
+            for result in results:
+                for bbox in result.boxes:
+                    xyxy = bbox.xyxy[0].tolist()
+                    cls_id = int(bbox.cls[0])
+                    score = float(bbox.conf[0])
+                    label = result.names[cls_id]
+                    regions.append(LayoutRegion(
+                        label=label, score=score,
+                        bbox=(int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])),
+                    ))
+
         regions.sort(key=lambda r: (r.bbox[1], r.bbox[0]))
         return regions
 
@@ -105,13 +142,14 @@ class DocLayoutDetector:
         session_id: str,
         image_paths: list[Path],
         layout_dir: str | Path,
+        orientation: str = "horizontal",
     ) -> LayoutRunResult:
         layout_dir_path = Path(layout_dir)
         layout_dir_path.mkdir(parents=True, exist_ok=True)
 
         pages: list[PageLayoutResult] = []
         for image_path in sorted(image_paths):
-            regions = self.detect(image_path)
+            regions = self.detect(image_path, orientation=orientation)
             layout_path = layout_dir_path / f"{image_path.stem}.json"
             payload = {
                 "image_path": str(image_path),
