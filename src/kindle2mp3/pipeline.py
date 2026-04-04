@@ -112,12 +112,11 @@ def run_llm_fix_stage(
     manager: SessionManager,
     session: Session,
     model: str = "gemini-2.5-flash-lite",
-    context_lines: int = 3,
 ):
     from kindle2mp3.llm_fix import GeminiClient, LlmFixer
 
     client = GeminiClient(model=model)
-    fixer = LlmFixer(client=client, context_lines=context_lines)
+    fixer = LlmFixer(client=client)
     result = fixer.run_for_session(
         session_id=session.session_id,
         combined_path=manager.ocr_combined_path(session),
@@ -128,8 +127,8 @@ def run_llm_fix_stage(
     llm_meta = session.metadata.setdefault("llm_fix", {})
     if isinstance(llm_meta, dict):
         llm_meta["model"] = model
-        llm_meta["sentence_count"] = result.sentence_count
-        llm_meta["changed_count"] = result.changed_count
+        llm_meta["window_count"] = result.window_count
+        llm_meta["changed"] = result.changed
     manager.save(session)
     return result
 

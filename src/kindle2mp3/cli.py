@@ -125,7 +125,6 @@ def build_parser() -> argparse.ArgumentParser:
     llm_fix_run = llm_fix_subparsers.add_parser("run", help="Run LLM fix for a session")
     llm_fix_run.add_argument("--session", required=True, help="Session id, e.g. book_0001")
     llm_fix_run.add_argument("--model", default="gemini-2.5-flash-lite", help="Gemini model name")
-    llm_fix_run.add_argument("--context-lines", type=int, default=3, help="Context lines before/after target")
     llm_fix_run.add_argument("--json", action="store_true", help="Emit JSON instead of text")
 
     tts_parser = subparsers.add_parser("tts", help="Run TTS for OCR text")
@@ -282,7 +281,6 @@ def handle_run(args: argparse.Namespace) -> int:
         llm_fix_command="run",
         session=session.session_id,
         model="gemini-2.5-flash-lite",
-        context_lines=3,
         json=False,
     )
     llm_fix_status = handle_llm_fix(namespace_llm_fix)
@@ -496,7 +494,6 @@ def handle_llm_fix(args: argparse.Namespace) -> int:
             manager=manager,
             session=session,
             model=args.model,
-            context_lines=args.context_lines,
         )
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)

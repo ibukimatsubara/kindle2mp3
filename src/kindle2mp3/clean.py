@@ -70,10 +70,14 @@ _NOISE_PATTERNS = [
 ]
 
 
+_SENTENCE_END_RE = re.compile(r"[。！？!?]")
+SHORT_LINE_THRESHOLD = 40
+
+
 class TextCleaner:
     def clean_page(self, text: str) -> str:
         lines = text.split("\n")
-        cleaned: list[str] = []
+        normalized: list[str] = []
 
         for line in lines:
             line = line.strip()
@@ -82,9 +86,32 @@ class TextCleaner:
             if any(p.match(line) for p in _NOISE_PATTERNS):
                 continue
             line = self._normalize(line)
-            cleaned.append(line)
+            normalized.append(line)
 
-        return "\n".join(cleaned)
+        # Join OCR line-wraps into proper sentences.
+        # A line that doesn't end with sentence-ending punctuation
+        # is a continuation of the previous line (OCR line-wrap).
+        sentences: list[str] = []
+        current = ""
+        for line in normalized:
+            if current:
+                current += line
+            else:
+                current = line
+
+            # Split on sentence boundaries within the joined text
+            while True:
+                match = _SENTENCE_END_RE.search(current)
+                if not match:
+                    break
+                end_pos = match.end()
+                sentences.append(current[:end_pos])
+                current = current[end_pos:].strip()
+
+        if current:
+            sentences.append(current)
+
+        return "\n".join(sentences)
 
     def _normalize(self, text: str) -> str:
         # katakana long vowel

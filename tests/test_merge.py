@@ -17,11 +17,28 @@ class AudioMergerTest(unittest.TestCase):
             self._write_silent_wav(wav1, frame_count=800)
             self._write_silent_wav(wav2, frame_count=1200)
 
-            merger = AudioMerger()
+            merger = AudioMerger(gap_ms=0)
             merger._merge_wavs([wav1, wav2], merged)
 
             with wave.open(str(merged), "rb") as handle:
                 self.assertEqual(handle.getnframes(), 2000)
+
+    def test_merge_wavs_inserts_silence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            base = Path(tmp_dir)
+            wav1 = base / "a.wav"
+            wav2 = base / "b.wav"
+            merged = base / "merged.wav"
+
+            self._write_silent_wav(wav1, frame_count=800)
+            self._write_silent_wav(wav2, frame_count=1200)
+
+            merger = AudioMerger(gap_ms=500)
+            merger._merge_wavs([wav1, wav2], merged)
+
+            with wave.open(str(merged), "rb") as handle:
+                # 800 + 500ms silence (24000 * 0.5 = 12000) + 1200
+                self.assertEqual(handle.getnframes(), 800 + 12000 + 1200)
 
     @staticmethod
     def _write_silent_wav(path: Path, *, frame_count: int) -> None:

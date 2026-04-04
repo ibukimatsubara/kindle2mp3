@@ -23,7 +23,13 @@ class MergeRunResult:
         }
 
 
+DEFAULT_GAP_MS = 300
+
+
 class AudioMerger:
+    def __init__(self, *, gap_ms: int = DEFAULT_GAP_MS) -> None:
+        self.gap_ms = gap_ms
+
     def run(
         self,
         *,
@@ -76,9 +82,18 @@ class AudioMerger:
                     raise RuntimeError(f"Incompatible WAV parameters: {path}")
                 frames.append(current.readframes(current.getnframes()))
 
+        silence = _make_silence(
+            ms=self.gap_ms,
+            framerate=params.framerate,
+            nchannels=params.nchannels,
+            sampwidth=params.sampwidth,
+        )
+
         with wave.open(str(output_path), "wb") as merged:
             merged.setparams(params)
-            for chunk in frames:
+            for i, chunk in enumerate(frames):
+                if i > 0 and silence:
+                    merged.writeframes(silence)
                 merged.writeframes(chunk)
 
     def _convert_to_mp3(self, wav_path: Path, output_path: Path) -> None:
@@ -139,3 +154,10 @@ class AudioMerger:
         )
         if completed.returncode != 0:
             raise RuntimeError(f"afconvert failed: {completed.stderr.strip()}")
+
+
+def _make_silence(*, ms: int, framerate: int, nchannels: int, sampwidth: int) -> bytes:
+    if ms <= 0:
+        return b""
+    num_frames = int(framerate * ms / 1000)
+    return b"\x00" * (num_frames * nchannels * sampwidth)
