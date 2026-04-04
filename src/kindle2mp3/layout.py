@@ -107,14 +107,13 @@ class DocLayoutDetector:
                     score = float(bbox.conf[0])
                     label = result.names[cls_id]
                     # Reverse the 90° CW rotation on bbox coordinates
-                    # Rotated image: (orig_h, orig_w)
-                    # Mapping: rotated (rx1, ry1, rx2, ry2) -> original (oy1, oh-rx2, oy2, oh-rx1)
-                    #   where oh = orig_h (= rotated width)
+                    # PIL rotate(-90, expand=True): orig (x,y) -> rotated (H-1-y, x)
+                    # Reverse: rotated (rx,ry) -> orig (ry, H-1-rx) where H = orig_h
                     rx1, ry1, rx2, ry2 = int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])
                     ox1 = ry1
-                    oy1 = orig_w - rx2
+                    oy1 = orig_h - 1 - rx2
                     ox2 = ry2
-                    oy2 = orig_w - rx1
+                    oy2 = orig_h - 1 - rx1
                     regions.append(LayoutRegion(
                         label=label, score=score,
                         bbox=(ox1, max(0, oy1), ox2, max(0, oy2)),
