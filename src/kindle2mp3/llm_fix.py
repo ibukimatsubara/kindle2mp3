@@ -114,6 +114,30 @@ class GeminiClient:
         return parts[0].get("text", "").strip() if parts else ""
 
 
+class OllamaClient:
+    def __init__(self, *, model: str, base_url: str = "http://localhost:11434") -> None:
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+
+    def generate(self, prompt: str) -> str:
+        payload = {
+            "model": self.model,
+            "system": SYSTEM_PROMPT,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": 0.0, "num_predict": 4096},
+        }
+        req = Request(
+            f"{self.base_url}/api/generate",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(req, timeout=600) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+        return result.get("response", "").strip()
+
+
 def split_pages(text: str) -> list[str]:
     """Split combined text into pages (separated by double newline)."""
     return [p.strip() for p in text.split("\n\n") if p.strip()]

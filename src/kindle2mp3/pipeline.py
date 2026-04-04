@@ -115,11 +115,16 @@ def run_llm_fix_stage(
     *,
     manager: SessionManager,
     session: Session,
-    model: str = "gemini-2.5-flash-lite",
+    backend: str = "gemini",
+    model: str | None = None,
+    ollama_url: str = "http://localhost:11434",
 ):
-    from kindle2mp3.llm_fix import GeminiClient, LlmFixer
+    from kindle2mp3.llm_fix import GeminiClient, LlmFixer, OllamaClient
 
-    client = GeminiClient(model=model)
+    if backend == "ollama":
+        client = OllamaClient(model=model or "gemma4:e4b", base_url=ollama_url)
+    else:
+        client = GeminiClient(model=model or "gemini-2.5-flash-lite")
     fixer = LlmFixer(client=client)
     result = fixer.run_for_session(
         session_id=session.session_id,
@@ -130,7 +135,8 @@ def run_llm_fix_stage(
     session.metadata["status"] = "llm_fix_completed"
     llm_meta = session.metadata.setdefault("llm_fix", {})
     if isinstance(llm_meta, dict):
-        llm_meta["model"] = model
+        llm_meta["backend"] = backend
+        llm_meta["model"] = model or ("gemma4:e4b" if backend == "ollama" else "gemini-2.5-flash-lite")
         llm_meta["window_count"] = result.window_count
         llm_meta["changed"] = result.changed
     manager.save(session)
