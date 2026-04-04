@@ -235,6 +235,23 @@ def main(argv: list[str] | None = None) -> int:
     return 2
 
 
+STAGES = [
+    ("capture", "Capturing pages"),
+    ("layout", "Detecting layout"),
+    ("ocr", "Running OCR"),
+    ("clean", "Cleaning text"),
+    ("llm-fix", "Fixing with LLM"),
+    ("tts", "Generating speech"),
+    ("merge", "Merging audio"),
+]
+
+
+def _log_stage(stage_index: int, message: str) -> None:
+    total = len(STAGES)
+    stage_name, _ = STAGES[stage_index]
+    print(f"[{stage_index + 1}/{total}] {stage_name}: {message}", flush=True)
+
+
 def handle_run(args: argparse.Namespace) -> int:
     manager = SessionManager()
     if args.session:
@@ -246,87 +263,68 @@ def handle_run(args: argparse.Namespace) -> int:
     else:
         session = manager.create(title=args.title)
 
-    # 1. capture
-    namespace_capture = argparse.Namespace(
-        capture_command="run",
-        window_id=args.window_id,
-        session=session.session_id,
-        key=args.key,
-        transport=args.transport,
-        output_dir=None,
-        pages=args.pages,
-        stop_after_no_change=args.stop_after_no_change,
-        settle_delay=args.settle_delay,
-        json=False,
-    )
-    capture_status = handle_capture(namespace_capture)
-    if capture_status != 0:
-        return capture_status
+    print(f"Session: {session.session_id}", flush=True)
 
-    # 2. layout
-    namespace_layout = argparse.Namespace(
-        layout_command="run",
-        session=session.session_id,
-        json=False,
-    )
-    layout_status = handle_layout(namespace_layout)
-    if layout_status != 0:
-        return layout_status
+    steps = [
+        (0, argparse.Namespace(
+            capture_command="run",
+            window_id=args.window_id,
+            session=session.session_id,
+            key=args.key,
+            transport=args.transport,
+            output_dir=None,
+            pages=args.pages,
+            stop_after_no_change=args.stop_after_no_change,
+            settle_delay=args.settle_delay,
+            json=False,
+        ), handle_capture),
+        (1, argparse.Namespace(
+            layout_command="run",
+            session=session.session_id,
+            json=False,
+        ), handle_layout),
+        (2, argparse.Namespace(
+            ocr_command="run",
+            session=session.session_id,
+            lang=args.lang,
+            json=False,
+        ), handle_ocr),
+        (3, argparse.Namespace(
+            clean_command="run",
+            session=session.session_id,
+            json=False,
+        ), handle_clean),
+        (4, argparse.Namespace(
+            llm_fix_command="run",
+            session=session.session_id,
+            model="gemini-2.5-flash-lite",
+            json=False,
+        ), handle_llm_fix),
+        (5, argparse.Namespace(
+            tts_command="run",
+            session=session.session_id,
+            speaker=args.speaker,
+            base_url=args.base_url,
+            max_chars=args.max_chars,
+            json=False,
+        ), handle_tts),
+        (6, argparse.Namespace(
+            merge_command="run",
+            session=session.session_id,
+            json=False,
+        ), handle_merge),
+    ]
 
-    # 3. ocr
-    namespace_ocr = argparse.Namespace(
-        ocr_command="run",
-        session=session.session_id,
-        lang=args.lang,
-        json=False,
-    )
-    ocr_status = handle_ocr(namespace_ocr)
-    if ocr_status != 0:
-        return ocr_status
+    for stage_idx, namespace, handler in steps:
+        _, stage_label = STAGES[stage_idx]
+        _log_stage(stage_idx, f"{stage_label}...")
+        status = handler(namespace)
+        if status != 0:
+            _log_stage(stage_idx, "FAILED")
+            return status
+        _log_stage(stage_idx, "done")
 
-    # 4. clean
-    namespace_clean = argparse.Namespace(
-        clean_command="run",
-        session=session.session_id,
-        json=False,
-    )
-    clean_status = handle_clean(namespace_clean)
-    if clean_status != 0:
-        return clean_status
-
-    # 5. llm-fix
-    namespace_llm_fix = argparse.Namespace(
-        llm_fix_command="run",
-        session=session.session_id,
-        model="gemini-2.5-flash-lite",
-        json=False,
-    )
-    llm_fix_status = handle_llm_fix(namespace_llm_fix)
-    if llm_fix_status != 0:
-        return llm_fix_status
-
-    # 6. tts
-    namespace_tts = argparse.Namespace(
-        tts_command="run",
-        session=session.session_id,
-        speaker=args.speaker,
-        base_url=args.base_url,
-        max_chars=args.max_chars,
-        json=False,
-    )
-    tts_status = handle_tts(namespace_tts)
-    if tts_status != 0:
-        return tts_status
-
-    # 6. merge
-    namespace_merge = argparse.Namespace(
-        merge_command="run",
-        session=session.session_id,
-        json=False,
-    )
-    merge_status = handle_merge(namespace_merge)
-    if merge_status != 0:
-        return merge_status
+    print()
 
     session = manager.load(session.session_id)
     output_meta = session.metadata.get("output", {})

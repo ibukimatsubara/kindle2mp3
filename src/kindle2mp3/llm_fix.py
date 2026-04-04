@@ -168,22 +168,28 @@ class LlmFixer:
         if not pages:
             return text, 0
 
+        total_pages = len(pages)
+
         # If all pages fit in one window, process in a single call
-        if len(pages) <= self.window_pages:
-            prompt = build_prompt(pages, 0, len(pages), "")
+        if total_pages <= self.window_pages:
+            print(f"  llm-fix: processing {total_pages} page(s) in 1 window", flush=True)
+            prompt = build_prompt(pages, 0, total_pages, "")
             result = self.client.generate(prompt)
             if result.strip():
                 return result.strip(), 1
             return text, 1
 
+        total_windows = (total_pages + self.stride_pages - 1) // self.stride_pages
         results: list[str] = []
         window_count = 0
         prev_output = ""
         processed_up_to = 0
 
-        while processed_up_to < len(pages):
+        while processed_up_to < total_pages:
             start = processed_up_to
-            end = min(start + self.window_pages, len(pages))
+            end = min(start + self.window_pages, total_pages)
+            window_count += 1
+            print(f"  llm-fix: window {window_count}/{total_windows} (pages {start + 1}-{end})", flush=True)
             prompt = build_prompt(pages, start, end, prev_output)
             result = self.client.generate(prompt)
 
@@ -194,7 +200,6 @@ class LlmFixer:
                 results.append("\n\n".join(pages[start:end]))
                 prev_output = ""
 
-            window_count += 1
             processed_up_to = end
 
         return "\n\n".join(results), window_count

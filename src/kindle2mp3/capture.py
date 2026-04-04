@@ -176,6 +176,8 @@ class PageCaptureRunner:
         first_path = directory / build_page_filename(1)
         self.capture.save_window_screenshot(window, first_path)
         saved_paths.append(first_path)
+        target = f"/{pages}" if pages else ""
+        print(f"  page 1{target} captured", flush=True)
 
         previous_path = first_path
         no_change_streak = 0
@@ -208,6 +210,7 @@ class PageCaptureRunner:
             no_change_streak = 0
             saved_paths.append(next_path)
             previous_path = next_path
+            print(f"  page {page_number}{target} captured", flush=True)
             page_number += 1
 
         return CaptureRunResult(

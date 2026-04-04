@@ -131,7 +131,9 @@ class VoicevoxTtsRunner:
         chunks: list[TtsChunk] = []
         manifest_items: list[dict[str, object]] = []
 
+        total_chunks = len(chunk_texts)
         for index, chunk_text in enumerate(chunk_texts, start=1):
+            print(f"  tts chunk {index}/{total_chunks}", flush=True)
             text_path = chunks_dir_path / f"chunk_{index:06d}.txt"
             wav_path = wav_dir_path / f"chunk_{index:06d}.wav"
             text_path.write_text(chunk_text + "\n", encoding="utf-8")

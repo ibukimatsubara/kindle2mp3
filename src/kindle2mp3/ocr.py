@@ -71,7 +71,10 @@ class PaddleOcrRunner:
         text_dir_path.mkdir(parents=True, exist_ok=True)
 
         pages: list[OcrPageResult] = []
-        for image_path in sorted(image_paths):
+        sorted_paths = sorted(image_paths)
+        total = len(sorted_paths)
+        for idx, image_path in enumerate(sorted_paths, 1):
+            print(f"  ocr page {idx}/{total}", flush=True)
             layout_path = layout_dir_path / f"{image_path.stem}.json"
             if layout_path.exists():
                 body_regions = [r for r in load_layout(layout_path) if r.is_body]
