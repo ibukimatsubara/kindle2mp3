@@ -128,51 +128,55 @@ class VoicevoxTtsRunner:
         wav_dir_path.mkdir(parents=True, exist_ok=True)
         manifest_path_obj.parent.mkdir(parents=True, exist_ok=True)
 
-        chunks: list[TtsChunk] = []
-        manifest_items: list[dict[str, object]] = []
-
         total_chunks = len(chunk_texts)
 
-        # Write all chunk text files first
-        chunk_plans: list[tuple[int, str, Path, Path]] = []
+        # Write all chunk text files and identify which need synthesis
+        pending: list[tuple[int, str, Path, Path]] = []
         for index, chunk_text in enumerate(chunk_texts, start=1):
             text_path = chunks_dir_path / f"chunk_{index:06d}.txt"
             wav_path = wav_dir_path / f"chunk_{index:06d}.wav"
             text_path.write_text(chunk_text + "\n", encoding="utf-8")
-            chunk_plans.append((index, chunk_text, text_path, wav_path))
+            if wav_path.exists() and wav_path.stat().st_size > 0:
+                continue  # already synthesized
+            pending.append((index, chunk_text, text_path, wav_path))
 
-        # Synthesize in parallel
+        skipped = total_chunks - len(pending)
+        if skipped > 0:
+            print(f"  tts: skipped {skipped} already-synthesized chunk(s)", flush=True)
+
+        # Synthesize pending chunks in parallel
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        def _synth(plan: tuple[int, str, Path, Path]) -> tuple[int, str, Path, Path, bytes]:
-            idx, text, tp, wp = plan
+        def _synth(plan: tuple[int, str, Path, Path]) -> tuple[int, bytes]:
+            idx, text, _, _ = plan
             wav_bytes = self._synthesize(text, speaker=speaker)
-            return idx, text, tp, wp, wav_bytes
+            return idx, wav_bytes
 
-        completed = 0
-        results_map: dict[int, tuple[str, Path, Path, bytes]] = {}
-        max_workers = min(4, total_chunks)
+        completed = skipped
+        max_workers = min(4, len(pending)) if pending else 1
 
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(_synth, plan): plan[0] for plan in chunk_plans}
+            futures = {pool.submit(_synth, plan): plan for plan in pending}
             for future in as_completed(futures):
-                idx, text, tp, wp, wav_bytes = future.result()
-                wp.write_bytes(wav_bytes)
-                results_map[idx] = (text, tp, wp, wav_bytes)
+                idx, wav_bytes = future.result()
+                _, _, _, wav_path = next(p for p in pending if p[0] == idx)
+                wav_path.write_bytes(wav_bytes)
                 completed += 1
                 print(f"  tts chunk {completed}/{total_chunks}", flush=True)
 
         # Build results in order
-        for index in range(1, total_chunks + 1):
-            text, tp, wp, _ = results_map[index]
-            chunk = TtsChunk(index=index, text=text, text_path=tp, wav_path=wp)
-            chunks.append(chunk)
+        chunks: list[TtsChunk] = []
+        manifest_items: list[dict[str, object]] = []
+        for index, chunk_text in enumerate(chunk_texts, start=1):
+            text_path = chunks_dir_path / f"chunk_{index:06d}.txt"
+            wav_path = wav_dir_path / f"chunk_{index:06d}.wav"
+            chunks.append(TtsChunk(index=index, text=chunk_text, text_path=text_path, wav_path=wav_path))
             manifest_items.append(
                 {
                     "index": index,
-                    "text_path": str(tp),
-                    "wav_path": str(wp),
-                    "char_count": len(text),
+                    "text_path": str(text_path),
+                    "wav_path": str(wav_path),
+                    "char_count": len(chunk_text),
                 }
             )
 
@@ -200,7 +204,7 @@ class VoicevoxTtsRunner:
             self.base_url + "/audio_query?" + urlencode({"text": text, "speaker": speaker}),
             method="POST",
         )
-        with urlopen(query_req, timeout=15) as resp:
+        with urlopen(query_req, timeout=30) as resp:
             query = json.loads(resp.read().decode("utf-8"))
 
         synthesis_req = Request(
@@ -209,5 +213,5 @@ class VoicevoxTtsRunner:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urlopen(synthesis_req, timeout=60) as resp:
+        with urlopen(synthesis_req, timeout=180) as resp:
             return resp.read()
