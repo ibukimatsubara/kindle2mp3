@@ -178,7 +178,7 @@ class LlmFixer:
     def __init__(
         self,
         *,
-        client: GeminiClient,
+        client,
         window_pages: int = DEFAULT_WINDOW_PAGES,
         stride_pages: int = DEFAULT_STRIDE_PAGES,
     ) -> None:
@@ -186,70 +186,82 @@ class LlmFixer:
         self.window_pages = window_pages
         self.stride_pages = stride_pages
 
-    def fix_text(self, text: str) -> tuple[str, int]:
-        """Fix OCR text. Returns (fixed_text, window_count)."""
-        pages = split_pages(text)
-        if not pages:
-            return text, 0
-
-        total_pages = len(pages)
-
-        # If all pages fit in one window, process in a single call
-        if total_pages <= self.window_pages:
-            print(f"  llm-fix: processing {total_pages} page(s) in 1 window", flush=True)
-            prompt = build_prompt(pages, 0, total_pages, "")
-            result = self.client.generate(prompt)
-            if result.strip():
-                return result.strip(), 1
-            return text, 1
-
-        total_windows = (total_pages + self.stride_pages - 1) // self.stride_pages
-        results: list[str] = []
-        window_count = 0
-        prev_output = ""
-        processed_up_to = 0
-
-        while processed_up_to < total_pages:
-            start = processed_up_to
-            end = min(start + self.window_pages, total_pages)
-            window_count += 1
-            print(f"  llm-fix: window {window_count}/{total_windows} (pages {start + 1}-{end})", flush=True)
-            prompt = build_prompt(pages, start, end, prev_output)
-            result = self.client.generate(prompt)
-
-            if result.strip():
-                results.append(result.strip())
-                prev_output = result.strip()
-            else:
-                results.append("\n\n".join(pages[start:end]))
-                prev_output = ""
-
-            processed_up_to = end
-
-        return "\n\n".join(results), window_count
-
     def run_for_session(
         self,
         *,
         session_id: str,
         combined_path: str | Path,
         fixed_path: str | Path,
+        windows_dir: str | Path,
     ) -> LlmFixResult:
         combined = Path(combined_path)
         output = Path(fixed_path)
+        win_dir = Path(windows_dir)
         output.parent.mkdir(parents=True, exist_ok=True)
+        win_dir.mkdir(parents=True, exist_ok=True)
 
         original_text = combined.read_text(encoding="utf-8").strip()
-        fixed_text, window_count = self.fix_text(original_text)
+        pages = split_pages(original_text)
 
+        if not pages:
+            output.write_text(original_text + "\n", encoding="utf-8")
+            return LlmFixResult(
+                session_id=session_id, fixed_path=output,
+                original_text=original_text, fixed_text=original_text,
+                window_count=0, changed=False,
+            )
+
+        # Build window plan
+        windows: list[tuple[int, int]] = []
+        pos = 0
+        while pos < len(pages):
+            end = min(pos + self.window_pages, len(pages))
+            windows.append((pos, end))
+            pos = end
+
+        total_windows = len(windows)
+        skipped = 0
+
+        for win_idx, (start, end) in enumerate(windows):
+            win_file = win_dir / f"window_{win_idx + 1:04d}.txt"
+
+            # Skip if already processed
+            if win_file.exists():
+                skipped += 1
+                continue
+
+            # Load previous window output for context
+            prev_output = ""
+            if win_idx > 0:
+                prev_file = win_dir / f"window_{win_idx:04d}.txt"
+                if prev_file.exists():
+                    prev_output = prev_file.read_text(encoding="utf-8").strip()
+
+            print(f"  llm-fix: window {win_idx + 1}/{total_windows} (pages {start + 1}-{end})", flush=True)
+            prompt = build_prompt(pages, start, end, prev_output)
+            result = self.client.generate(prompt)
+
+            if result.strip():
+                win_file.write_text(result.strip() + "\n", encoding="utf-8")
+            else:
+                fallback = "\n\n".join(pages[start:end])
+                win_file.write_text(fallback + "\n", encoding="utf-8")
+
+        if skipped > 0:
+            print(f"  llm-fix: skipped {skipped} already-processed window(s)", flush=True)
+
+        # Combine all windows
+        all_parts: list[str] = []
+        for win_idx in range(total_windows):
+            win_file = win_dir / f"window_{win_idx + 1:04d}.txt"
+            all_parts.append(win_file.read_text(encoding="utf-8").strip())
+
+        fixed_text = "\n\n".join(all_parts)
         output.write_text(fixed_text + "\n", encoding="utf-8")
         combined.write_text(fixed_text + "\n", encoding="utf-8")
 
         return LlmFixResult(
-            session_id=session_id,
-            fixed_path=output,
-            original_text=original_text,
-            fixed_text=fixed_text,
-            window_count=window_count,
-            changed=original_text != fixed_text,
+            session_id=session_id, fixed_path=output,
+            original_text=original_text, fixed_text=fixed_text,
+            window_count=total_windows, changed=original_text != fixed_text,
         )

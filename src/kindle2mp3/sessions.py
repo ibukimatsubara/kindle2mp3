@@ -102,6 +102,9 @@ class SessionManager:
     def llm_fixed_path(self, session: Session) -> Path:
         return session.root / "ocr" / "llm_fixed.txt"
 
+    def llm_windows_dir(self, session: Session) -> Path:
+        return session.root / "ocr" / "llm_windows"
+
     def tts_chunks_dir(self, session: Session) -> Path:
         return session.root / "tts" / "chunks"
 

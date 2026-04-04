@@ -130,6 +130,7 @@ def run_llm_fix_stage(
         session_id=session.session_id,
         combined_path=manager.ocr_combined_path(session),
         fixed_path=manager.llm_fixed_path(session),
+        windows_dir=manager.llm_windows_dir(session),
     )
 
     session.metadata["status"] = "llm_fix_completed"
