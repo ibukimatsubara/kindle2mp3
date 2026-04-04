@@ -111,39 +111,23 @@ def run_llm_fix_stage(
     *,
     manager: SessionManager,
     session: Session,
-    backend: str = "gemini",
-    model: str | None = None,
-    ollama_url: str = "http://localhost:11434",
+    model: str = "gemini-2.5-flash-lite",
     context_lines: int = 3,
 ):
-    from kindle2mp3.llm_fix import GeminiClient, LlmFixer, OllamaClient, OllamaManager
+    from kindle2mp3.llm_fix import GeminiClient, LlmFixer
 
-    ollama_mgr = None
-    if backend == "gemini":
-        actual_model = model or "gemini-2.5-flash-lite"
-        client = GeminiClient(model=actual_model)
-    else:
-        actual_model = model or "qwen2.5:7b"
-        ollama_mgr = OllamaManager()
-        ollama_mgr.ensure_running(ollama_url)
-        client = OllamaClient(model=actual_model, base_url=ollama_url)
-
-    try:
-        fixer = LlmFixer(client=client, context_lines=context_lines)
-        result = fixer.run_for_session(
-            session_id=session.session_id,
-            combined_path=manager.ocr_combined_path(session),
-            fixed_path=manager.llm_fixed_path(session),
-        )
-    finally:
-        if ollama_mgr:
-            ollama_mgr.stop()
+    client = GeminiClient(model=model)
+    fixer = LlmFixer(client=client, context_lines=context_lines)
+    result = fixer.run_for_session(
+        session_id=session.session_id,
+        combined_path=manager.ocr_combined_path(session),
+        fixed_path=manager.llm_fixed_path(session),
+    )
 
     session.metadata["status"] = "llm_fix_completed"
     llm_meta = session.metadata.setdefault("llm_fix", {})
     if isinstance(llm_meta, dict):
-        llm_meta["backend"] = backend
-        llm_meta["model"] = actual_model
+        llm_meta["model"] = model
         llm_meta["sentence_count"] = result.sentence_count
         llm_meta["changed_count"] = result.changed_count
     manager.save(session)

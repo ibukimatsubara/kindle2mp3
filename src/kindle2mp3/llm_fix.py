@@ -1,20 +1,18 @@
-"""LLM-based OCR text correction using Gemini API or Ollama."""
+"""LLM-based OCR text correction using Gemini API."""
 from __future__ import annotations
 
 import json
 import os
 import re
-import subprocess
-import time
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 
 SENTENCE_END_RE = re.compile(r"[。！？!?」）\)]$")
 SHORT_LINE_THRESHOLD = 40
 
+DEFAULT_MODEL = "gemini-2.5-flash-lite"
 DEFAULT_CONTEXT_LINES = 3
 
 SYSTEM_PROMPT = """\
@@ -61,10 +59,8 @@ class LlmFixResult:
         }
 
 
-# ── LLM Clients ─────────────────────────────────────
-
 class GeminiClient:
-    def __init__(self, *, model: str = "gemini-2.5-flash-lite", api_key: str | None = None) -> None:
+    def __init__(self, *, model: str = DEFAULT_MODEL, api_key: str | None = None) -> None:
         self.model = model
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
         if not self.api_key:
@@ -101,68 +97,6 @@ class GeminiClient:
         parts = candidates[0].get("content", {}).get("parts", [])
         return parts[0].get("text", "").strip() if parts else ""
 
-
-class OllamaClient:
-    def __init__(self, *, model: str = "qwen2.5:7b", base_url: str = "http://localhost:11434") -> None:
-        self.model = model
-        self.base_url = base_url.rstrip("/")
-
-    def generate(self, prompt: str) -> str:
-        payload = {
-            "model": self.model,
-            "system": SYSTEM_PROMPT,
-            "prompt": prompt,
-            "stream": False,
-            "options": {"temperature": 0.0, "num_predict": 256},
-        }
-        req = Request(
-            f"{self.base_url}/api/generate",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urlopen(req, timeout=60) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-        return result.get("response", "").strip()
-
-
-class OllamaManager:
-    def __init__(self) -> None:
-        self._process: subprocess.Popen | None = None
-
-    def ensure_running(self, base_url: str) -> None:
-        if self._is_reachable(base_url):
-            return
-        if base_url != "http://localhost:11434":
-            raise RuntimeError(f"Remote Ollama at {base_url} is not reachable")
-        self._process = subprocess.Popen(
-            ["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        for _ in range(30):
-            time.sleep(1)
-            if self._is_reachable(base_url):
-                return
-        raise RuntimeError("ollama serve did not start within 30 seconds")
-
-    def stop(self) -> None:
-        if self._process is not None:
-            self._process.terminate()
-            try:
-                self._process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self._process.kill()
-            self._process = None
-
-    @staticmethod
-    def _is_reachable(base_url: str) -> bool:
-        try:
-            with urlopen(base_url, timeout=2):
-                return True
-        except (URLError, OSError):
-            return False
-
-
-# ── Sentence splitting ───────────────────────────────
 
 def split_sentences(text: str) -> list[str]:
     paragraphs = text.split("\n\n")
@@ -209,10 +143,8 @@ def build_fix_prompt(
     return FIX_PROMPT_TEMPLATE.format(context=context)
 
 
-# ── Fixer ────────────────────────────────────────────
-
 class LlmFixer:
-    def __init__(self, *, client, context_lines: int = DEFAULT_CONTEXT_LINES) -> None:
+    def __init__(self, *, client: GeminiClient, context_lines: int = DEFAULT_CONTEXT_LINES) -> None:
         self.client = client
         self.context_lines = context_lines
 

@@ -93,9 +93,6 @@ class SessionManager:
     def ocr_text_dir(self, session: Session) -> Path:
         return session.root / "ocr" / "text"
 
-    def ocr_normalized_dir(self, session: Session) -> Path:
-        return session.root / "ocr" / "normalized"
-
     def ocr_clean_dir(self, session: Session) -> Path:
         return session.root / "ocr" / "clean"
 
