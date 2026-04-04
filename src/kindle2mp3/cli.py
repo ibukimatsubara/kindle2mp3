@@ -2,7 +2,25 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+from pathlib import Path
 import sys
+
+
+def _load_dotenv() -> None:
+    env_path = Path(".env")
+    if not env_path.exists():
+        return
+    for line in env_path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" in line:
+            key, _, value = line.partition("=")
+            os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+
+
+_load_dotenv()
 
 from kindle2mp3.capture import (
     PageCaptureRunner,
