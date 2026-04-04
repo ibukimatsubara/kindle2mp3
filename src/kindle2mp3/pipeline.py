@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from kindle2mp3.capture import PageCaptureRunner
+from kindle2mp3.clean import TextCleaner
+from kindle2mp3.layout import DocLayoutDetector
 from kindle2mp3.merge import AudioMerger
 from kindle2mp3.ocr import PaddleOcrRunner
 from kindle2mp3.sessions import Session, SessionManager
@@ -39,6 +41,30 @@ def run_capture_stage(
     return result
 
 
+def run_layout_stage(*, manager: SessionManager, session: Session):
+    image_paths = sorted(manager.capture_raw_dir(session).glob("page_*.png"))
+    if not image_paths:
+        raise RuntimeError("no captured PNG files found for session")
+
+    detector = DocLayoutDetector()
+    result = detector.run_for_session(
+        session_id=session.session_id,
+        image_paths=image_paths,
+        layout_dir=manager.layout_dir(session),
+    )
+
+    session.metadata["status"] = "layout_completed"
+    layout_meta = session.metadata.setdefault("layout", {})
+    if isinstance(layout_meta, dict):
+        layout_meta["provider"] = "doclayout-yolo"
+        layout_meta["page_count"] = len(result.pages)
+        layout_meta["total_body_regions"] = sum(
+            len(p.body_regions) for p in result.pages
+        )
+    manager.save(session)
+    return result
+
+
 def run_ocr_stage(*, manager: SessionManager, session: Session, lang: str):
     image_paths = sorted(manager.capture_raw_dir(session).glob("page_*.png"))
     if not image_paths:
@@ -48,9 +74,9 @@ def run_ocr_stage(*, manager: SessionManager, session: Session, lang: str):
     result = runner.run_for_session(
         session_id=session.session_id,
         image_paths=image_paths,
+        layout_dir=manager.layout_dir(session),
         raw_dir=manager.ocr_raw_dir(session),
-        normalized_dir=manager.ocr_normalized_dir(session),
-        combined_path=manager.ocr_combined_path(session),
+        text_dir=manager.ocr_text_dir(session),
     )
 
     session.metadata["status"] = "ocr_completed"
@@ -59,6 +85,24 @@ def run_ocr_stage(*, manager: SessionManager, session: Session, lang: str):
         ocr_meta["provider"] = "paddleocr"
         ocr_meta["language"] = lang
         ocr_meta["page_count"] = len(result.pages)
+    manager.save(session)
+    return result
+
+
+def run_clean_stage(*, manager: SessionManager, session: Session):
+    cleaner = TextCleaner()
+    result = cleaner.run_for_session(
+        session_id=session.session_id,
+        text_dir=manager.ocr_text_dir(session),
+        clean_dir=manager.ocr_clean_dir(session),
+        combined_path=manager.ocr_combined_path(session),
+    )
+
+    session.metadata["status"] = "clean_completed"
+    clean_meta = session.metadata.setdefault("clean", {})
+    if isinstance(clean_meta, dict):
+        clean_meta["page_count"] = len(result.pages)
+        clean_meta["combined_path"] = str(result.combined_path)
     manager.save(session)
     return result
 
@@ -111,7 +155,9 @@ def run_merge_stage(*, manager: SessionManager, session: Session):
     session.metadata["status"] = "merge_completed"
     output_meta = session.metadata.setdefault("output", {})
     if isinstance(output_meta, dict):
-        output_meta["mp3_path"] = str(result.output_audio_path) if result.output_format == "mp3" else None
+        output_meta["mp3_path"] = (
+            str(result.output_audio_path) if result.output_format == "mp3" else None
+        )
         output_meta["audio_path"] = str(result.output_audio_path)
         output_meta["audio_format"] = result.output_format
     manager.save(session)

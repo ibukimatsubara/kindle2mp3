@@ -84,11 +84,20 @@ class SessionManager:
     def capture_raw_dir(self, session: Session) -> Path:
         return session.root / "capture" / "raw"
 
+    def layout_dir(self, session: Session) -> Path:
+        return session.root / "layout"
+
     def ocr_raw_dir(self, session: Session) -> Path:
         return session.root / "ocr" / "raw"
 
+    def ocr_text_dir(self, session: Session) -> Path:
+        return session.root / "ocr" / "text"
+
     def ocr_normalized_dir(self, session: Session) -> Path:
         return session.root / "ocr" / "normalized"
+
+    def ocr_clean_dir(self, session: Session) -> Path:
+        return session.root / "ocr" / "clean"
 
     def ocr_combined_path(self, session: Session) -> Path:
         return session.root / "ocr" / "combined.txt"
@@ -124,8 +133,11 @@ class SessionManager:
         for relative in (
             "capture/raw",
             "capture/debug",
+            "layout",
             "ocr/raw",
+            "ocr/text",
             "ocr/normalized",
+            "ocr/clean",
             "tts/chunks",
             "tts/wav",
             "output",

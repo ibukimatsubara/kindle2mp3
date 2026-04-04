@@ -18,6 +18,8 @@ from kindle2mp3.defaults import (
 )
 from kindle2mp3.pipeline import (
     run_capture_stage,
+    run_clean_stage,
+    run_layout_stage,
     run_merge_stage,
     run_ocr_stage,
     run_tts_stage,
@@ -94,19 +96,33 @@ def build_parser() -> argparse.ArgumentParser:
     capture_parser = subparsers.add_parser("capture", help="Capture or probe Kindle pages")
     capture_subparsers = capture_parser.add_subparsers(dest="capture_command", required=True)
 
+    layout_parser = subparsers.add_parser("layout", help="Detect page layout regions")
+    layout_subparsers = layout_parser.add_subparsers(dest="layout_command", required=True)
+
+    layout_run = layout_subparsers.add_parser("run", help="Run layout detection for a session")
+    layout_run.add_argument("--session", required=True, help="Session id, e.g. book_0001")
+    layout_run.add_argument("--json", action="store_true", help="Emit JSON instead of text")
+
     ocr_parser = subparsers.add_parser("ocr", help="Run OCR on captured session images")
     ocr_subparsers = ocr_parser.add_subparsers(dest="ocr_command", required=True)
+
+    ocr_run = ocr_subparsers.add_parser("run", help="Run OCR for a session")
+    ocr_run.add_argument("--session", required=True, help="Session id, e.g. book_0001")
+    ocr_run.add_argument("--lang", default="japan", help="PaddleOCR language code")
+    ocr_run.add_argument("--json", action="store_true", help="Emit JSON instead of text")
+
+    clean_parser = subparsers.add_parser("clean", help="Clean and normalize OCR text")
+    clean_subparsers = clean_parser.add_subparsers(dest="clean_command", required=True)
+
+    clean_run = clean_subparsers.add_parser("run", help="Clean OCR text for a session")
+    clean_run.add_argument("--session", required=True, help="Session id, e.g. book_0001")
+    clean_run.add_argument("--json", action="store_true", help="Emit JSON instead of text")
 
     tts_parser = subparsers.add_parser("tts", help="Run TTS for OCR text")
     tts_subparsers = tts_parser.add_subparsers(dest="tts_command", required=True)
 
     merge_parser = subparsers.add_parser("merge", help="Merge generated WAV files into a final MP3")
     merge_subparsers = merge_parser.add_subparsers(dest="merge_command", required=True)
-
-    ocr_run = ocr_subparsers.add_parser("run", help="Run OCR for a session")
-    ocr_run.add_argument("--session", required=True, help="Session id, e.g. book_0001")
-    ocr_run.add_argument("--lang", default="japan", help="PaddleOCR language code")
-    ocr_run.add_argument("--json", action="store_true", help="Emit JSON instead of text")
 
     tts_run = tts_subparsers.add_parser("run", help="Run VOICEVOX TTS for a session")
     tts_run.add_argument("--session", required=True, help="Session id, e.g. book_0001")
@@ -175,8 +191,12 @@ def main(argv: list[str] | None = None) -> int:
         return handle_session(args)
     if args.command == "capture":
         return handle_capture(args)
+    if args.command == "layout":
+        return handle_layout(args)
     if args.command == "ocr":
         return handle_ocr(args)
+    if args.command == "clean":
+        return handle_clean(args)
     if args.command == "tts":
         return handle_tts(args)
     if args.command == "merge":
@@ -197,6 +217,7 @@ def handle_run(args: argparse.Namespace) -> int:
     else:
         session = manager.create(title=args.title)
 
+    # 1. capture
     namespace_capture = argparse.Namespace(
         capture_command="run",
         window_id=args.window_id,
@@ -213,6 +234,17 @@ def handle_run(args: argparse.Namespace) -> int:
     if capture_status != 0:
         return capture_status
 
+    # 2. layout
+    namespace_layout = argparse.Namespace(
+        layout_command="run",
+        session=session.session_id,
+        json=False,
+    )
+    layout_status = handle_layout(namespace_layout)
+    if layout_status != 0:
+        return layout_status
+
+    # 3. ocr
     namespace_ocr = argparse.Namespace(
         ocr_command="run",
         session=session.session_id,
@@ -223,6 +255,17 @@ def handle_run(args: argparse.Namespace) -> int:
     if ocr_status != 0:
         return ocr_status
 
+    # 4. clean
+    namespace_clean = argparse.Namespace(
+        clean_command="run",
+        session=session.session_id,
+        json=False,
+    )
+    clean_status = handle_clean(namespace_clean)
+    if clean_status != 0:
+        return clean_status
+
+    # 5. tts
     namespace_tts = argparse.Namespace(
         tts_command="run",
         session=session.session_id,
@@ -235,6 +278,7 @@ def handle_run(args: argparse.Namespace) -> int:
     if tts_status != 0:
         return tts_status
 
+    # 6. merge
     namespace_merge = argparse.Namespace(
         merge_command="run",
         session=session.session_id,
@@ -333,6 +377,33 @@ def handle_session(args: argparse.Namespace) -> int:
     return 2
 
 
+def handle_layout(args: argparse.Namespace) -> int:
+    if args.layout_command != "run":
+        print(f"error: unknown layout subcommand: {args.layout_command}", file=sys.stderr)
+        return 2
+
+    manager = SessionManager()
+    try:
+        session = manager.load(args.session)
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        result = run_layout_stage(manager=manager, session=session)
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+    else:
+        print(f"Layout detected for {len(result.pages)} page(s).")
+        total_body = sum(len(p.body_regions) for p in result.pages)
+        print(f"Total body regions: {total_body}")
+    return 0
+
+
 def handle_ocr(args: argparse.Namespace) -> int:
     if args.ocr_command != "run":
         print(f"error: unknown ocr subcommand: {args.ocr_command}", file=sys.stderr)
@@ -355,6 +426,32 @@ def handle_ocr(args: argparse.Namespace) -> int:
         print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
     else:
         print(render_ocr_run_result(result))
+    return 0
+
+
+def handle_clean(args: argparse.Namespace) -> int:
+    if args.clean_command != "run":
+        print(f"error: unknown clean subcommand: {args.clean_command}", file=sys.stderr)
+        return 2
+
+    manager = SessionManager()
+    try:
+        session = manager.load(args.session)
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        result = run_clean_stage(manager=manager, session=session)
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+    else:
+        print(f"Cleaned {len(result.pages)} page(s).")
+        print(f"Combined text: {result.combined_path}")
     return 0
 
 

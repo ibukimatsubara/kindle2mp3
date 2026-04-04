@@ -1,3 +1,4 @@
+"""OCR using PaddleOCR, scoped to layout-detected body regions."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -5,13 +6,27 @@ import json
 import os
 from pathlib import Path
 
+from PIL import Image
+
+from kindle2mp3.layout import LayoutRegion, load_layout
+
+
+@dataclass(slots=True)
+class OcrRegionResult:
+    region_index: int
+    label: str
+    bbox: tuple[int, int, int, int]
+    lines: list[dict]
+    text: str
+
 
 @dataclass(slots=True)
 class OcrPageResult:
     image_path: Path
     raw_path: Path
-    normalized_path: Path
+    text_path: Path
     text: str
+    regions: list[OcrRegionResult]
 
 
 @dataclass(slots=True)
@@ -20,18 +35,16 @@ class OcrRunResult:
     provider: str
     language: str
     raw_dir: Path
-    normalized_dir: Path
-    combined_path: Path
+    text_dir: Path
     pages: list[OcrPageResult]
 
-    def to_dict(self) -> dict[str, object]:
+    def to_dict(self) -> dict:
         return {
             "session_id": self.session_id,
             "provider": self.provider,
             "language": self.language,
             "raw_dir": str(self.raw_dir),
-            "normalized_dir": str(self.normalized_dir),
-            "combined_path": str(self.combined_path),
+            "text_dir": str(self.text_dir),
             "page_count": len(self.pages),
         }
 
@@ -47,77 +60,128 @@ class PaddleOcrRunner:
         *,
         session_id: str,
         image_paths: list[Path],
+        layout_dir: str | Path,
         raw_dir: str | Path,
-        normalized_dir: str | Path,
-        combined_path: str | Path,
+        text_dir: str | Path,
     ) -> OcrRunResult:
         raw_dir_path = Path(raw_dir)
-        normalized_dir_path = Path(normalized_dir)
-        combined_path_obj = Path(combined_path)
+        text_dir_path = Path(text_dir)
+        layout_dir_path = Path(layout_dir)
         raw_dir_path.mkdir(parents=True, exist_ok=True)
-        normalized_dir_path.mkdir(parents=True, exist_ok=True)
-        combined_path_obj.parent.mkdir(parents=True, exist_ok=True)
+        text_dir_path.mkdir(parents=True, exist_ok=True)
 
         pages: list[OcrPageResult] = []
-        combined_texts: list[str] = []
-
         for image_path in sorted(image_paths):
-            result = self._run_single_image(image_path, raw_dir_path, normalized_dir_path)
-            pages.append(result)
-            combined_texts.append(result.text)
+            layout_path = layout_dir_path / f"{image_path.stem}.json"
+            if layout_path.exists():
+                body_regions = [r for r in load_layout(layout_path) if r.is_body]
+            else:
+                body_regions = []
 
-        combined_text = "\n\n".join(text for text in combined_texts if text)
-        combined_path_obj.write_text(combined_text + ("\n" if combined_text else ""), encoding="utf-8")
+            result = self._run_single_page(
+                image_path, body_regions, raw_dir_path, text_dir_path,
+            )
+            pages.append(result)
 
         return OcrRunResult(
             session_id=session_id,
             provider="paddleocr",
             language=self.lang,
             raw_dir=raw_dir_path,
-            normalized_dir=normalized_dir_path,
-            combined_path=combined_path_obj,
+            text_dir=text_dir_path,
             pages=pages,
         )
 
-    def _run_single_image(
+    def _run_single_page(
         self,
         image_path: Path,
+        body_regions: list[LayoutRegion],
         raw_dir: Path,
-        normalized_dir: Path,
+        text_dir: Path,
     ) -> OcrPageResult:
-        raw_result = self._get_engine().predict(
-            str(image_path),
-            use_textline_orientation=self.use_angle_cls,
-        )
-        lines = self._extract_lines(raw_result)
-        text = "\n".join(line["text"] for line in lines).strip()
+        region_results: list[OcrRegionResult] = []
+
+        if not body_regions:
+            # fallback: OCR the whole image
+            lines = self._ocr_image(image_path)
+            text = "\n".join(line["text"] for line in lines).strip()
+            region_results.append(OcrRegionResult(
+                region_index=0, label="full_page", bbox=(0, 0, 0, 0),
+                lines=lines, text=text,
+            ))
+        else:
+            # Mask non-body regions white, then OCR the full page.
+            # This preserves page-level context (font size, line spacing)
+            # that PaddleOCR uses for accurate recognition.
+            masked = _mask_non_body(image_path, body_regions)
+            all_lines = self._ocr_pil_image(masked)
+
+            # Assign each OCR line to the nearest body region (no duplicates)
+            assigned = _assign_lines_to_regions(all_lines, body_regions)
+            for i, region in enumerate(body_regions):
+                region_lines = assigned.get(i, [])
+                text = "\n".join(line["text"] for line in region_lines).strip()
+                region_results.append(OcrRegionResult(
+                    region_index=i, label=region.label,
+                    bbox=region.bbox, lines=region_lines, text=text,
+                ))
+
+        # combine all region texts in reading order (already sorted by layout)
+        page_text = "\n".join(r.text for r in region_results if r.text).strip()
 
         stem = image_path.stem
         raw_path = raw_dir / f"{stem}.json"
-        normalized_path = normalized_dir / f"{stem}.txt"
+        text_path = text_dir / f"{stem}.txt"
 
         raw_payload = {
             "image_path": str(image_path),
             "provider": "paddleocr",
             "language": self.lang,
-            "use_textline_orientation": self.use_angle_cls,
-            "lines": lines,
+            "regions": [
+                {
+                    "region_index": r.region_index,
+                    "label": r.label,
+                    "bbox": list(r.bbox),
+                    "lines": r.lines,
+                }
+                for r in region_results
+            ],
         }
-        raw_path.write_text(json.dumps(raw_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        normalized_path.write_text(text + ("\n" if text else ""), encoding="utf-8")
+        raw_path.write_text(
+            json.dumps(raw_payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        text_path.write_text(page_text + ("\n" if page_text else ""), encoding="utf-8")
 
         return OcrPageResult(
             image_path=image_path,
             raw_path=raw_path,
-            normalized_path=normalized_path,
-            text=text,
+            text_path=text_path,
+            text=page_text,
+            regions=region_results,
         )
+
+    def _ocr_image(self, image_path: Path) -> list[dict]:
+        raw_result = self._get_engine().predict(
+            str(image_path),
+            use_textline_orientation=self.use_angle_cls,
+        )
+        return self._extract_lines(raw_result)
+
+    def _ocr_pil_image(self, pil_image: Image.Image) -> list[dict]:
+        import numpy as np
+        rgb_image = pil_image.convert("RGB") if pil_image.mode != "RGB" else pil_image
+        img_array = np.array(rgb_image)
+        raw_result = self._get_engine().predict(
+            img_array,
+            use_textline_orientation=self.use_angle_cls,
+        )
+        return self._extract_lines(raw_result)
 
     def _get_engine(self):
         if self._ocr is None:
             os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
             from paddleocr import PaddleOCR
-
             self._ocr = PaddleOCR(
                 lang=self.lang,
                 use_textline_orientation=self.use_angle_cls,
@@ -125,7 +189,7 @@ class PaddleOcrRunner:
         return self._ocr
 
     @staticmethod
-    def _extract_lines(raw_result) -> list[dict[str, object]]:
+    def _extract_lines(raw_result) -> list[dict]:
         payload = raw_result[0] if raw_result and isinstance(raw_result, list) else raw_result
         if payload is None:
             return []
@@ -133,17 +197,21 @@ class PaddleOcrRunner:
             texts = list(payload.get("rec_texts", []))
             scores = list(payload.get("rec_scores", []))
             polys = list(payload.get("rec_polys", payload.get("dt_polys", [])))
-            lines: list[dict[str, object]] = []
+            lines: list[dict] = []
             for index, text in enumerate(texts):
                 text = str(text).strip()
                 if not text:
                     continue
                 score = float(scores[index]) if index < len(scores) else 0.0
-                box = polys[index].tolist() if index < len(polys) and hasattr(polys[index], "tolist") else polys[index] if index < len(polys) else None
+                box = (
+                    polys[index].tolist()
+                    if index < len(polys) and hasattr(polys[index], "tolist")
+                    else polys[index] if index < len(polys) else None
+                )
                 lines.append({"box": box, "text": text, "score": score})
             return lines
 
-        lines: list[dict[str, object]] = []
+        lines: list[dict] = []
         for item in payload:
             if not isinstance(item, (list, tuple)) or len(item) < 2:
                 continue
@@ -157,3 +225,76 @@ class PaddleOcrRunner:
                 continue
             lines.append({"box": box, "text": text, "score": score})
         return lines
+
+
+MASK_PADDING = 20
+
+
+def _mask_non_body(
+    image_path: Path, body_regions: list[LayoutRegion],
+) -> Image.Image:
+    """White-out everything outside body regions (with padding)."""
+    from PIL import ImageDraw as _ImageDraw
+
+    img = Image.open(image_path).convert("RGB")
+    w, h = img.size
+    mask = Image.new("L", img.size, 0)
+    draw = _ImageDraw.Draw(mask)
+    for region in body_regions:
+        padded = (
+            max(0, region.bbox[0] - MASK_PADDING),
+            max(0, region.bbox[1] - MASK_PADDING),
+            min(w, region.bbox[2] + MASK_PADDING),
+            min(h, region.bbox[3] + MASK_PADDING),
+        )
+        draw.rectangle(padded, fill=255)
+    white = Image.new("RGB", img.size, (255, 255, 255))
+    return Image.composite(img, white, mask)
+
+
+def _assign_lines_to_regions(
+    lines: list[dict], regions: list[LayoutRegion],
+) -> dict[int, list[dict]]:
+    """Assign each OCR line to exactly one region (closest center distance)."""
+    assigned: dict[int, list[dict]] = {i: [] for i in range(len(regions))}
+    for line in lines:
+        box = line.get("box")
+        if not box or not isinstance(box[0], (list, tuple)):
+            continue
+        cx = sum(p[0] for p in box) / len(box)
+        cy = sum(p[1] for p in box) / len(box)
+
+        best_idx = -1
+        best_dist = float("inf")
+        for i, region in enumerate(regions):
+            x1, y1, x2, y2 = region.bbox
+            # distance from center to bbox (0 if inside)
+            dx = max(x1 - cx, 0, cx - x2)
+            dy = max(y1 - cy, 0, cy - y2)
+            dist = dx * dx + dy * dy
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = i
+
+        if best_idx >= 0 and best_dist <= MASK_PADDING * MASK_PADDING * 2:
+            assigned[best_idx].append(line)
+
+    return assigned
+
+
+def _line_center_in_bbox(line: dict, bbox: tuple[int, int, int, int]) -> bool:
+    """Check if an OCR line's center falls inside a bbox (with padding)."""
+    box = line.get("box")
+    if not box:
+        return False
+    if isinstance(box[0], (list, tuple)):
+        xs = [p[0] for p in box]
+        ys = [p[1] for p in box]
+    else:
+        return False
+    cx = sum(xs) / len(xs)
+    cy = sum(ys) / len(ys)
+    return (
+        bbox[0] - MASK_PADDING <= cx <= bbox[2] + MASK_PADDING
+        and bbox[1] - MASK_PADDING <= cy <= bbox[3] + MASK_PADDING
+    )

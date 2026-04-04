@@ -79,8 +79,7 @@ def render_ocr_run_result(result) -> str:
         f"Provider: {result.provider}",
         f"Language: {result.language}",
         f"Raw directory: {result.raw_dir}",
-        f"Normalized directory: {result.normalized_dir}",
-        f"Combined text: {result.combined_path}",
+        f"Text directory: {result.text_dir}",
     ]
     return "\n".join(lines)
 
