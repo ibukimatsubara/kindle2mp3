@@ -119,12 +119,13 @@ def build_parser() -> argparse.ArgumentParser:
     clean_run.add_argument("--session", required=True, help="Session id, e.g. book_0001")
     clean_run.add_argument("--json", action="store_true", help="Emit JSON instead of text")
 
-    llm_fix_parser = subparsers.add_parser("llm-fix", help="Fix OCR text using local LLM")
+    llm_fix_parser = subparsers.add_parser("llm-fix", help="Fix OCR text using LLM")
     llm_fix_subparsers = llm_fix_parser.add_subparsers(dest="llm_fix_command", required=True)
 
     llm_fix_run = llm_fix_subparsers.add_parser("run", help="Run LLM fix for a session")
     llm_fix_run.add_argument("--session", required=True, help="Session id, e.g. book_0001")
-    llm_fix_run.add_argument("--model", default="gemma3:4b", help="Ollama model name")
+    llm_fix_run.add_argument("--backend", choices=("gemini", "ollama"), default="gemini", help="LLM backend")
+    llm_fix_run.add_argument("--model", default=None, help="Model name (default: gemini-2.5-flash-lite or qwen2.5:7b)")
     llm_fix_run.add_argument("--ollama-url", default="http://localhost:11434", help="Ollama base URL")
     llm_fix_run.add_argument("--context-lines", type=int, default=3, help="Context lines before/after target")
     llm_fix_run.add_argument("--json", action="store_true", help="Emit JSON instead of text")
@@ -282,7 +283,8 @@ def handle_run(args: argparse.Namespace) -> int:
     namespace_llm_fix = argparse.Namespace(
         llm_fix_command="run",
         session=session.session_id,
-        model="gemma3:4b",
+        backend="gemini",
+        model=None,
         ollama_url="http://localhost:11434",
         context_lines=3,
         json=False,
@@ -497,8 +499,9 @@ def handle_llm_fix(args: argparse.Namespace) -> int:
         result = run_llm_fix_stage(
             manager=manager,
             session=session,
+            backend=args.backend,
             model=args.model,
-            base_url=args.ollama_url,
+            ollama_url=args.ollama_url,
             context_lines=args.context_lines,
         )
     except RuntimeError as exc:

@@ -1,41 +1,46 @@
-"""LLM-based OCR text correction using Ollama."""
+"""LLM-based OCR text correction using Gemini API or Ollama."""
 from __future__ import annotations
 
 import json
+import os
 import re
-import signal
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.error import URLError
-from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
 SENTENCE_END_RE = re.compile(r"[。！？!?」）\)]$")
-# Lines shorter than this are treated as complete units (headings, list items)
 SHORT_LINE_THRESHOLD = 40
 
-DEFAULT_MODEL = "gemma3:4b"
-DEFAULT_BASE_URL = "http://localhost:11434"
 DEFAULT_CONTEXT_LINES = 3
 
 SYSTEM_PROMPT = """\
-あなたはOCR誤認識の修正専門家です。
-ルール:
-- 明らかなOCR誤字のみ修正する
-- 原文の意味・構造・句読点の位置は変えない
-- 文を追加・削除・要約しない
-- 修正後のテキストだけを出力する（説明不要）"""
+あなたはOCR誤認識の校正者です。
+
+絶対に守るルール:
+1. 誤字の修正だけを行う。1〜3文字の置換のみ許可する
+2. 文の追加・削除・並べ替え・言い換えは禁止
+3. 意味や構造が正しい箇所は絶対に変えない
+4. 修正が不要なら入力をそのまま返す
+5. 修正後のテキストだけを出力する。説明・注釈・番号は一切不要
+
+よくあるOCR誤字の例:
+- 一→ー（カタカナの長音）: チ一ム→チーム
+- ユ→ュ（小書き）: レビユー→レビュー
+- ソ→ン: バージョソ→バージョン
+- ツ→ッ: プラツト→プラット"""
 
 FIX_PROMPT_TEMPLATE = """\
-以下はOCR結果の一部です。[修正対象]の行のOCR誤字だけを修正してください。
-[文脈]の行は参照用です。出力しないでください。
+以下の「>>>」行のOCR誤字を修正してください。
+前後の行は文脈です。出力しないでください。
+修正がなければ「>>>」行をそのまま返してください。
 
 {context}
 
-[修正対象]の行の修正結果だけを1行で出力してください。説明や番号は不要です。"""
+「>>>」行の修正結果だけを出力:"""
 
 
 @dataclass(slots=True)
@@ -56,25 +61,83 @@ class LlmFixResult:
         }
 
 
-class OllamaManager:
-    """Start/stop ollama serve as a subprocess."""
+# ── LLM Clients ─────────────────────────────────────
 
+class GeminiClient:
+    def __init__(self, *, model: str = "gemini-2.5-flash-lite", api_key: str | None = None) -> None:
+        self.model = model
+        self.api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
+        if not self.api_key:
+            raise RuntimeError(
+                "GEMINI_API_KEY environment variable is required. "
+                "Get one at https://aistudio.google.com/apikey"
+            )
+
+    def generate(self, prompt: str) -> str:
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/"
+            f"models/{self.model}:generateContent?key={self.api_key}"
+        )
+        payload = {
+            "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": 0.0,
+                "maxOutputTokens": 256,
+            },
+        }
+        req = Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+
+        candidates = result.get("candidates", [])
+        if not candidates:
+            return ""
+        parts = candidates[0].get("content", {}).get("parts", [])
+        return parts[0].get("text", "").strip() if parts else ""
+
+
+class OllamaClient:
+    def __init__(self, *, model: str = "qwen2.5:7b", base_url: str = "http://localhost:11434") -> None:
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+
+    def generate(self, prompt: str) -> str:
+        payload = {
+            "model": self.model,
+            "system": SYSTEM_PROMPT,
+            "prompt": prompt,
+            "stream": False,
+            "options": {"temperature": 0.0, "num_predict": 256},
+        }
+        req = Request(
+            f"{self.base_url}/api/generate",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(req, timeout=60) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+        return result.get("response", "").strip()
+
+
+class OllamaManager:
     def __init__(self) -> None:
         self._process: subprocess.Popen | None = None
 
-    def ensure_running(self, base_url: str = DEFAULT_BASE_URL) -> None:
+    def ensure_running(self, base_url: str) -> None:
         if self._is_reachable(base_url):
             return
-        if base_url != DEFAULT_BASE_URL:
-            raise RuntimeError(
-                f"Remote Ollama at {base_url} is not reachable"
-            )
+        if base_url != "http://localhost:11434":
+            raise RuntimeError(f"Remote Ollama at {base_url} is not reachable")
         self._process = subprocess.Popen(
-            ["ollama", "serve"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            ["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        # wait for it to be ready
         for _ in range(30):
             time.sleep(1)
             if self._is_reachable(base_url):
@@ -99,41 +162,9 @@ class OllamaManager:
             return False
 
 
-class OllamaClient:
-    def __init__(
-        self,
-        *,
-        model: str = DEFAULT_MODEL,
-        base_url: str = DEFAULT_BASE_URL,
-    ) -> None:
-        self.model = model
-        self.base_url = base_url.rstrip("/")
-
-    def generate(self, prompt: str) -> str:
-        payload = {
-            "model": self.model,
-            "system": SYSTEM_PROMPT,
-            "prompt": prompt,
-            "stream": False,
-            "options": {
-                "temperature": 0.1,
-                "num_predict": 512,
-            },
-        }
-        req = Request(
-            f"{self.base_url}/api/generate",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urlopen(req, timeout=60) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-        return result.get("response", "").strip()
-
+# ── Sentence splitting ───────────────────────────────
 
 def split_sentences(text: str) -> list[str]:
-    """Split text into sentences, respecting paragraph breaks and short lines."""
-    # Split on paragraph breaks (double newline) first
     paragraphs = text.split("\n\n")
     sentences: list[str] = []
 
@@ -142,7 +173,6 @@ def split_sentences(text: str) -> list[str]:
         current = ""
 
         for line in lines:
-            # Short lines are likely headings or list items — keep them separate
             if len(line) <= SHORT_LINE_THRESHOLD and not current:
                 sentences.append(line)
                 continue
@@ -163,9 +193,7 @@ def split_sentences(text: str) -> list[str]:
 
 
 def build_fix_prompt(
-    sentences: list[str],
-    target_idx: int,
-    context_lines: int = DEFAULT_CONTEXT_LINES,
+    sentences: list[str], target_idx: int, context_lines: int = DEFAULT_CONTEXT_LINES,
 ) -> str:
     start = max(0, target_idx - context_lines)
     end = min(len(sentences), target_idx + context_lines + 1)
@@ -173,27 +201,22 @@ def build_fix_prompt(
     lines: list[str] = []
     for i in range(start, end):
         if i == target_idx:
-            lines.append(f"[修正対象] {sentences[i]}")
+            lines.append(f">>> {sentences[i]}")
         else:
-            lines.append(f"[文脈] {sentences[i]}")
+            lines.append(f"    {sentences[i]}")
 
     context = "\n".join(lines)
     return FIX_PROMPT_TEMPLATE.format(context=context)
 
 
+# ── Fixer ────────────────────────────────────────────
+
 class LlmFixer:
-    def __init__(
-        self,
-        *,
-        model: str = DEFAULT_MODEL,
-        base_url: str = DEFAULT_BASE_URL,
-        context_lines: int = DEFAULT_CONTEXT_LINES,
-    ) -> None:
-        self.client = OllamaClient(model=model, base_url=base_url)
+    def __init__(self, *, client, context_lines: int = DEFAULT_CONTEXT_LINES) -> None:
+        self.client = client
         self.context_lines = context_lines
 
     def fix_text(self, text: str) -> tuple[str, int, int]:
-        """Fix OCR text. Returns (fixed_text, sentence_count, changed_count)."""
         sentences = split_sentences(text)
         if not sentences:
             return text, 0, 0
@@ -205,20 +228,18 @@ class LlmFixer:
             prompt = build_fix_prompt(sentences, i, self.context_lines)
             result = self.client.generate(prompt)
 
-            # Sanity check: if result is wildly different length, keep original
             result_clean = result.strip()
-            # Strip any prompt artifacts the LLM might echo back
-            for prefix in ("[修正対象]", "[修正対象] ", "[文脈]", "[文脈] "):
+            for prefix in (">>>", ">>> ", "「>>>」"):
                 if result_clean.startswith(prefix):
                     result_clean = result_clean[len(prefix):]
-            result_clean = result_clean.strip()
+            result_clean = result_clean.strip().strip("「」")
+
             if not result_clean:
                 fixed.append(sentence)
                 continue
 
             ratio = len(result_clean) / len(sentence) if sentence else 1
             if ratio < 0.5 or ratio > 2.0:
-                # LLM likely hallucinated or summarized
                 fixed.append(sentence)
                 continue
 
@@ -243,7 +264,6 @@ class LlmFixer:
         fixed_text, sentence_count, changed_count = self.fix_text(original_text)
 
         output.write_text(fixed_text + "\n", encoding="utf-8")
-        # Also overwrite combined.txt so TTS picks up the fixed version
         combined.write_text(fixed_text + "\n", encoding="utf-8")
 
         return LlmFixResult(
