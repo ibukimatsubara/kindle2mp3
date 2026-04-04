@@ -14,6 +14,8 @@ from urllib.request import Request, urlopen
 
 
 SENTENCE_END_RE = re.compile(r"[。！？!?」）\)]$")
+# Lines shorter than this are treated as complete units (headings, list items)
+SHORT_LINE_THRESHOLD = 40
 
 DEFAULT_MODEL = "gemma3:4b"
 DEFAULT_BASE_URL = "http://localhost:11434"
@@ -28,12 +30,12 @@ SYSTEM_PROMPT = """\
 - 修正後のテキストだけを出力する（説明不要）"""
 
 FIX_PROMPT_TEMPLATE = """\
-以下はOCR結果の一部です。★の行のOCR誤認識を修正してください。
-前後の行は文脈として参照するだけで、出力しないでください。
+以下はOCR結果の一部です。[修正対象]の行のOCR誤字だけを修正してください。
+[文脈]の行は参照用です。出力しないでください。
 
 {context}
 
-★の行の修正結果だけを出力してください。"""
+[修正対象]の行の修正結果だけを1行で出力してください。説明や番号は不要です。"""
 
 
 @dataclass(slots=True)
@@ -63,6 +65,10 @@ class OllamaManager:
     def ensure_running(self, base_url: str = DEFAULT_BASE_URL) -> None:
         if self._is_reachable(base_url):
             return
+        if base_url != DEFAULT_BASE_URL:
+            raise RuntimeError(
+                f"Remote Ollama at {base_url} is not reachable"
+            )
         self._process = subprocess.Popen(
             ["ollama", "serve"],
             stdout=subprocess.DEVNULL,
@@ -126,23 +132,32 @@ class OllamaClient:
 
 
 def split_sentences(text: str) -> list[str]:
-    """Split text into sentences, joining lines that don't end with sentence-ending punctuation."""
-    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    """Split text into sentences, respecting paragraph breaks and short lines."""
+    # Split on paragraph breaks (double newline) first
+    paragraphs = text.split("\n\n")
     sentences: list[str] = []
-    current = ""
 
-    for line in lines:
+    for paragraph in paragraphs:
+        lines = [line.strip() for line in paragraph.split("\n") if line.strip()]
+        current = ""
+
+        for line in lines:
+            # Short lines are likely headings or list items — keep them separate
+            if len(line) <= SHORT_LINE_THRESHOLD and not current:
+                sentences.append(line)
+                continue
+
+            if current:
+                current += line
+            else:
+                current = line
+
+            if SENTENCE_END_RE.search(current):
+                sentences.append(current)
+                current = ""
+
         if current:
-            current += line
-        else:
-            current = line
-
-        if SENTENCE_END_RE.search(current):
             sentences.append(current)
-            current = ""
-
-    if current:
-        sentences.append(current)
 
     return sentences
 
@@ -158,9 +173,9 @@ def build_fix_prompt(
     lines: list[str] = []
     for i in range(start, end):
         if i == target_idx:
-            lines.append(f"★: {sentences[i]}")
+            lines.append(f"[修正対象] {sentences[i]}")
         else:
-            lines.append(f"{i + 1}: {sentences[i]}")
+            lines.append(f"[文脈] {sentences[i]}")
 
     context = "\n".join(lines)
     return FIX_PROMPT_TEMPLATE.format(context=context)
@@ -191,7 +206,12 @@ class LlmFixer:
             result = self.client.generate(prompt)
 
             # Sanity check: if result is wildly different length, keep original
-            result_clean = result.strip().strip("★:").strip()
+            result_clean = result.strip()
+            # Strip any prompt artifacts the LLM might echo back
+            for prefix in ("[修正対象]", "[修正対象] ", "[文脈]", "[文脈] "):
+                if result_clean.startswith(prefix):
+                    result_clean = result_clean[len(prefix):]
+            result_clean = result_clean.strip()
             if not result_clean:
                 fixed.append(sentence)
                 continue
