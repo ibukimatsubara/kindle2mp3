@@ -71,22 +71,44 @@ class PaddleOcrRunner:
         raw_dir_path.mkdir(parents=True, exist_ok=True)
         text_dir_path.mkdir(parents=True, exist_ok=True)
 
-        pages: list[OcrPageResult] = []
         sorted_paths = sorted(image_paths)
         total = len(sorted_paths)
-        for idx, image_path in enumerate(sorted_paths, 1):
-            print(f"  ocr page {idx}/{total}", flush=True)
+
+        # Prepare per-page inputs
+        page_inputs: list[tuple[Path, list[LayoutRegion]]] = []
+        for image_path in sorted_paths:
             layout_path = layout_dir_path / f"{image_path.stem}.json"
             if layout_path.exists():
                 body_regions = [r for r in load_layout(layout_path) if r.is_body]
             else:
                 body_regions = []
+            page_inputs.append((image_path, body_regions))
 
+        # Process pages in parallel
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _process(args: tuple[Path, list[LayoutRegion]]) -> tuple[Path, OcrPageResult]:
+            img_path, regions = args
             result = self._run_single_page(
-                image_path, body_regions, raw_dir_path, text_dir_path,
+                img_path, regions, raw_dir_path, text_dir_path,
                 orientation=orientation,
             )
-            pages.append(result)
+            return img_path, result
+
+        max_workers = min(4, total)
+        results_map: dict[str, OcrPageResult] = {}
+        completed = 0
+
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_process, inp): inp[0] for inp in page_inputs}
+            for future in as_completed(futures):
+                img_path, result = future.result()
+                results_map[img_path.name] = result
+                completed += 1
+                print(f"  ocr page {completed}/{total}", flush=True)
+
+        # Collect in order
+        pages: list[OcrPageResult] = [results_map[p.name] for p in sorted_paths]
 
         return OcrRunResult(
             session_id=session_id,

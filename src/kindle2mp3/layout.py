@@ -135,6 +135,62 @@ class DocLayoutDetector:
         regions.sort(key=lambda r: (r.bbox[1], r.bbox[0]))
         return regions
 
+    def detect_batch(self, image_paths: list[Path], *, orientation: str = "horizontal") -> list[list[LayoutRegion]]:
+        """Detect layout for multiple images in one batch call."""
+        from PIL import Image
+        import tempfile
+
+        model = self._get_model()
+        sorted_paths = sorted(image_paths)
+
+        if orientation == "vertical":
+            tmp_paths: list[str] = []
+            orig_sizes: list[tuple[int, int]] = []
+            for p in sorted_paths:
+                with Image.open(p) as img:
+                    orig_sizes.append(img.size)
+                    rotated = img.rotate(-90, expand=True)
+                    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                    rotated.save(tmp.name)
+                    tmp_paths.append(tmp.name)
+            predict_paths = tmp_paths
+        else:
+            predict_paths = [str(p) for p in sorted_paths]
+            orig_sizes = []
+
+        results = model.predict(predict_paths, imgsz=1024, conf=self.conf)
+
+        if orientation == "vertical":
+            for tmp in tmp_paths:
+                Path(tmp).unlink(missing_ok=True)
+
+        all_regions: list[list[LayoutRegion]] = []
+        for i, result in enumerate(results):
+            regions: list[LayoutRegion] = []
+            for bbox in result.boxes:
+                xyxy = bbox.xyxy[0].tolist()
+                cls_id = int(bbox.cls[0])
+                score = float(bbox.conf[0])
+                label = result.names[cls_id]
+                rx1, ry1, rx2, ry2 = int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])
+
+                if orientation == "vertical":
+                    orig_w, orig_h = orig_sizes[i]
+                    ox1, oy1, ox2, oy2 = ry1, orig_h - 1 - rx2, ry2, orig_h - 1 - rx1
+                    regions.append(LayoutRegion(
+                        label=label, score=score,
+                        bbox=(ox1, max(0, oy1), ox2, max(0, oy2)),
+                    ))
+                else:
+                    regions.append(LayoutRegion(
+                        label=label, score=score,
+                        bbox=(rx1, ry1, rx2, ry2),
+                    ))
+            regions.sort(key=lambda r: (r.bbox[1], r.bbox[0]))
+            all_regions.append(regions)
+
+        return all_regions
+
     def run_for_session(
         self,
         *,
@@ -146,9 +202,12 @@ class DocLayoutDetector:
         layout_dir_path = Path(layout_dir)
         layout_dir_path.mkdir(parents=True, exist_ok=True)
 
+        sorted_paths = sorted(image_paths)
+        print(f"  layout: batch processing {len(sorted_paths)} page(s)...", flush=True)
+        all_regions = self.detect_batch(sorted_paths, orientation=orientation)
+
         pages: list[PageLayoutResult] = []
-        for image_path in sorted(image_paths):
-            regions = self.detect(image_path, orientation=orientation)
+        for image_path, regions in zip(sorted_paths, all_regions):
             layout_path = layout_dir_path / f"{image_path.stem}.json"
             payload = {
                 "image_path": str(image_path),

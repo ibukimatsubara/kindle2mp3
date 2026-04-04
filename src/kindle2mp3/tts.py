@@ -132,22 +132,47 @@ class VoicevoxTtsRunner:
         manifest_items: list[dict[str, object]] = []
 
         total_chunks = len(chunk_texts)
+
+        # Write all chunk text files first
+        chunk_plans: list[tuple[int, str, Path, Path]] = []
         for index, chunk_text in enumerate(chunk_texts, start=1):
-            print(f"  tts chunk {index}/{total_chunks}", flush=True)
             text_path = chunks_dir_path / f"chunk_{index:06d}.txt"
             wav_path = wav_dir_path / f"chunk_{index:06d}.wav"
             text_path.write_text(chunk_text + "\n", encoding="utf-8")
-            wav_bytes = self._synthesize(chunk_text, speaker=speaker)
-            wav_path.write_bytes(wav_bytes)
+            chunk_plans.append((index, chunk_text, text_path, wav_path))
 
-            chunk = TtsChunk(index=index, text=chunk_text, text_path=text_path, wav_path=wav_path)
+        # Synthesize in parallel
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _synth(plan: tuple[int, str, Path, Path]) -> tuple[int, str, Path, Path, bytes]:
+            idx, text, tp, wp = plan
+            wav_bytes = self._synthesize(text, speaker=speaker)
+            return idx, text, tp, wp, wav_bytes
+
+        completed = 0
+        results_map: dict[int, tuple[str, Path, Path, bytes]] = {}
+        max_workers = min(4, total_chunks)
+
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_synth, plan): plan[0] for plan in chunk_plans}
+            for future in as_completed(futures):
+                idx, text, tp, wp, wav_bytes = future.result()
+                wp.write_bytes(wav_bytes)
+                results_map[idx] = (text, tp, wp, wav_bytes)
+                completed += 1
+                print(f"  tts chunk {completed}/{total_chunks}", flush=True)
+
+        # Build results in order
+        for index in range(1, total_chunks + 1):
+            text, tp, wp, _ = results_map[index]
+            chunk = TtsChunk(index=index, text=text, text_path=tp, wav_path=wp)
             chunks.append(chunk)
             manifest_items.append(
                 {
                     "index": index,
-                    "text_path": str(text_path),
-                    "wav_path": str(wav_path),
-                    "char_count": len(chunk_text),
+                    "text_path": str(tp),
+                    "wav_path": str(wp),
+                    "char_count": len(text),
                 }
             )
 
