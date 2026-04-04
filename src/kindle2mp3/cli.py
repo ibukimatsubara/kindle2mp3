@@ -552,7 +552,7 @@ def handle_llm_fix(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
     else:
-        print(f"LLM fix: {result.sentence_count} sentence(s), {result.changed_count} changed.")
+        print(f"LLM fix: {result.window_count} window(s), changed={result.changed}")
         print(f"Fixed text: {result.fixed_path}")
     return 0
 
