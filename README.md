@@ -129,6 +129,38 @@ workspace/book_0001/
 - **音声結合**: ffmpeg (フォールバック: afconvert)
 - **パッケージ管理**: uv
 
+## Podcast 配信
+
+生成した MP3 を RSS フィードとして Podcast アプリで聴ける。
+
+### フィード生成のみ
+
+```bash
+uv run kindle2mp3 podcast generate
+```
+
+`podcast/feed.xml` と `podcast/media/` にフィードと音声ファイルが出力される。
+
+### フィード生成 + HTTP サーバー起動
+
+```bash
+uv run kindle2mp3 podcast serve --port 8080
+```
+
+Podcast アプリに `http://<IPアドレス>:8080/feed.xml` を登録する。
+
+### オプション
+
+```bash
+# ベース URL を指定 (Tailscale 等で外部公開する場合)
+uv run kindle2mp3 podcast serve --base-url http://100.x.x.x:8080
+
+# タイトル・説明をカスタマイズ
+uv run kindle2mp3 podcast serve --title "My Audiobooks" --description "Kindle本の読み上げ"
+```
+
+完成済みセッション (`merge_completed`) のみがエピソードとして含まれる。エピソードが 0 件の場合はサーバーを起動しない。
+
 ## テスト
 
 ```bash

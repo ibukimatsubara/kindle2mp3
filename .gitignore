@@ -22,5 +22,7 @@ dist/
 
 tmp/
 workspace/
+podcast/
+.detect/
 
 .env
