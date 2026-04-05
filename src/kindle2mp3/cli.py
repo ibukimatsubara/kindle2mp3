@@ -142,9 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     llm_fix_run = llm_fix_subparsers.add_parser("run", help="Run LLM fix for a session")
     llm_fix_run.add_argument("--session", required=True, help="Session id, e.g. book_0001")
-    llm_fix_run.add_argument("--backend", choices=("gemini", "ollama"), default="gemini", help="LLM backend")
-    llm_fix_run.add_argument("--model", default=None, help="Model name")
-    llm_fix_run.add_argument("--ollama-url", default="http://localhost:11434", help="Ollama base URL")
+    llm_fix_run.add_argument("--model", default=None, help="Gemini model name")
     llm_fix_run.add_argument("--json", action="store_true", help="Emit JSON instead of text")
 
     tts_parser = subparsers.add_parser("tts", help="Run TTS for OCR text")
@@ -348,9 +346,7 @@ def handle_run(args: argparse.Namespace) -> int:
         (4, argparse.Namespace(
             llm_fix_command="run",
             session=session.session_id,
-            backend="gemini",
             model=None,
-            ollama_url="http://localhost:11434",
             json=False,
         ), handle_llm_fix),
         (5, argparse.Namespace(
@@ -562,9 +558,7 @@ def handle_llm_fix(args: argparse.Namespace) -> int:
         result = run_llm_fix_stage(
             manager=manager,
             session=session,
-            backend=args.backend,
             model=args.model,
-            ollama_url=args.ollama_url,
         )
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)

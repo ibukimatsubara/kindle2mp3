@@ -114,30 +114,6 @@ class GeminiClient:
         return parts[0].get("text", "").strip() if parts else ""
 
 
-class OllamaClient:
-    def __init__(self, *, model: str, base_url: str = "http://localhost:11434") -> None:
-        self.model = model
-        self.base_url = base_url.rstrip("/")
-
-    def generate(self, prompt: str) -> str:
-        payload = {
-            "model": self.model,
-            "system": SYSTEM_PROMPT,
-            "prompt": prompt,
-            "stream": False,
-            "options": {"temperature": 0.0, "num_predict": 4096},
-        }
-        req = Request(
-            f"{self.base_url}/api/generate",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urlopen(req, timeout=600) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-        return result.get("response", "").strip()
-
-
 def split_pages(text: str) -> list[str]:
     """Split combined text into pages (separated by double newline)."""
     return [p.strip() for p in text.split("\n\n") if p.strip()]
@@ -239,12 +215,16 @@ class LlmFixer:
 
             print(f"  llm-fix: window {win_idx + 1}/{total_windows} (pages {start + 1}-{end})", flush=True)
             prompt = build_prompt(pages, start, end, prev_output)
-            result = self.client.generate(prompt)
+            fallback = "\n\n".join(pages[start:end])
+            try:
+                result = self.client.generate(prompt)
+            except Exception as exc:
+                print(f"  llm-fix: Gemini failed, passing through original text: {exc}", flush=True)
+                result = ""
 
             if result.strip():
                 win_file.write_text(result.strip() + "\n", encoding="utf-8")
             else:
-                fallback = "\n\n".join(pages[start:end])
                 win_file.write_text(fallback + "\n", encoding="utf-8")
 
         if skipped > 0:
