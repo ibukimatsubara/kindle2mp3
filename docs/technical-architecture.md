@@ -73,6 +73,7 @@ src/kindle2mp3/
   sessions.py       セッション管理、ディレクトリ・メタデータ
   windowing.py      macOS ウィンドウ列挙・Kindle 検出
   defaults.py       既定値定数
+  podcast.py        RSS フィード生成・HTTP 配信
   presenters.py     CLI出力のテキスト整形
 ```
 
