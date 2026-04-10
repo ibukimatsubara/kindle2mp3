@@ -1,25 +1,17 @@
 import unittest
 
-from kindle2mp3.layout import LayoutRegion, BODY_LABELS, SKIP_LABELS
+from kindle2mp3.ndlocr import _BODY_TYPES
 
 
-class LayoutRegionTest(unittest.TestCase):
-    def test_body_label_is_body(self) -> None:
-        for label in BODY_LABELS:
-            region = LayoutRegion(label=label, score=0.9, bbox=(0, 0, 100, 100))
-            self.assertTrue(region.is_body, f"{label} should be body")
+class BodyTypesTest(unittest.TestCase):
+    def test_body_types_include_expected(self) -> None:
+        self.assertIn("本文", _BODY_TYPES)
+        self.assertIn("タイトル本文", _BODY_TYPES)
 
-    def test_skip_label_is_not_body(self) -> None:
-        for label in SKIP_LABELS:
-            region = LayoutRegion(label=label, score=0.9, bbox=(0, 0, 100, 100))
-            self.assertFalse(region.is_body, f"{label} should not be body")
-
-    def test_to_dict(self) -> None:
-        region = LayoutRegion(label="plain text", score=0.95, bbox=(10, 20, 300, 400))
-        d = region.to_dict()
-        self.assertEqual(d["label"], "plain text")
-        self.assertEqual(d["bbox"], [10, 20, 300, 400])
-        self.assertTrue(d["is_body"])
+    def test_body_types_exclude_headers(self) -> None:
+        self.assertNotIn("柱", _BODY_TYPES)
+        self.assertNotIn("ノンブル", _BODY_TYPES)
+        self.assertNotIn("図版", _BODY_TYPES)
 
 
 if __name__ == "__main__":

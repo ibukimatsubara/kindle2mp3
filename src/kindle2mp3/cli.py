@@ -37,7 +37,6 @@ from kindle2mp3.defaults import (
 from kindle2mp3.pipeline import (
     run_capture_stage,
     run_clean_stage,
-    run_layout_stage,
     run_llm_fix_stage,
     run_merge_stage,
     run_ocr_stage,
@@ -78,7 +77,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_STOP_AFTER_NO_CHANGE,
         help="Stop after this many consecutive no-change turns when --pages is omitted",
     )
-    run_parser.add_argument("--lang", default="japan", help="PaddleOCR language code")
     run_parser.add_argument("--speaker", type=int, default=DEFAULT_SPEAKER, help="VOICEVOX speaker style id")
     run_parser.add_argument("--base-url", default=DEFAULT_VOICEVOX_BASE_URL, help="VOICEVOX Engine base URL")
     run_parser.add_argument("--max-chars", type=int, default=180, help="Maximum characters per chunk")
@@ -115,19 +113,11 @@ def build_parser() -> argparse.ArgumentParser:
     capture_parser = subparsers.add_parser("capture", help="Capture or probe Kindle pages")
     capture_subparsers = capture_parser.add_subparsers(dest="capture_command", required=True)
 
-    layout_parser = subparsers.add_parser("layout", help="Detect page layout regions")
-    layout_subparsers = layout_parser.add_subparsers(dest="layout_command", required=True)
-
-    layout_run = layout_subparsers.add_parser("run", help="Run layout detection for a session")
-    layout_run.add_argument("--session", required=True, help="Session id, e.g. book_0001")
-    layout_run.add_argument("--json", action="store_true", help="Emit JSON instead of text")
-
     ocr_parser = subparsers.add_parser("ocr", help="Run OCR on captured session images")
     ocr_subparsers = ocr_parser.add_subparsers(dest="ocr_command", required=True)
 
     ocr_run = ocr_subparsers.add_parser("run", help="Run OCR for a session")
     ocr_run.add_argument("--session", required=True, help="Session id, e.g. book_0001")
-    ocr_run.add_argument("--lang", default="japan", help="PaddleOCR language code")
     ocr_run.add_argument("--json", action="store_true", help="Emit JSON instead of text")
 
     clean_parser = subparsers.add_parser("clean", help="Clean and normalize OCR text")
@@ -235,8 +225,6 @@ def main(argv: list[str] | None = None) -> int:
         return handle_session(args)
     if args.command == "capture":
         return handle_capture(args)
-    if args.command == "layout":
-        return handle_layout(args)
     if args.command == "ocr":
         return handle_ocr(args)
     if args.command == "clean":
@@ -256,8 +244,7 @@ def main(argv: list[str] | None = None) -> int:
 
 STAGES = [
     ("capture", "Capturing pages"),
-    ("layout", "Detecting layout"),
-    ("ocr", "Running OCR"),
+    ("ocr", "Running OCR (layout + recognition)"),
     ("clean", "Cleaning text"),
     ("llm-fix", "Fixing with LLM"),
     ("tts", "Generating speech"),
@@ -296,7 +283,7 @@ def handle_run(args: argparse.Namespace) -> int:
         except RuntimeError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
-        print("[0/7] auto-detect: Detecting page turn direction...", flush=True)
+        print("[0/6] auto-detect: Detecting page turn direction...", flush=True)
         try:
             auto_detector = KeyAutoDetector(
                 settle_delay=args.settle_delay, transport=args.transport,
@@ -309,7 +296,7 @@ def handle_run(args: argparse.Namespace) -> int:
         except RuntimeError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
-        print(f"[0/7] auto-detect: {orientation} (key={key})", flush=True)
+        print(f"[0/6] auto-detect: {orientation} (key={key})", flush=True)
 
     session.metadata["orientation"] = orientation
     manager.save(session)
@@ -328,28 +315,22 @@ def handle_run(args: argparse.Namespace) -> int:
             json=False,
         ), handle_capture),
         (1, argparse.Namespace(
-            layout_command="run",
-            session=session.session_id,
-            json=False,
-        ), handle_layout),
-        (2, argparse.Namespace(
             ocr_command="run",
             session=session.session_id,
-            lang=args.lang,
             json=False,
         ), handle_ocr),
-        (3, argparse.Namespace(
+        (2, argparse.Namespace(
             clean_command="run",
             session=session.session_id,
             json=False,
         ), handle_clean),
-        (4, argparse.Namespace(
+        (3, argparse.Namespace(
             llm_fix_command="run",
             session=session.session_id,
             model=None,
             json=False,
         ), handle_llm_fix),
-        (5, argparse.Namespace(
+        (4, argparse.Namespace(
             tts_command="run",
             session=session.session_id,
             speaker=args.speaker,
@@ -357,7 +338,7 @@ def handle_run(args: argparse.Namespace) -> int:
             max_chars=args.max_chars,
             json=False,
         ), handle_tts),
-        (6, argparse.Namespace(
+        (5, argparse.Namespace(
             merge_command="run",
             session=session.session_id,
             json=False,
@@ -464,33 +445,6 @@ def handle_session(args: argparse.Namespace) -> int:
     return 2
 
 
-def handle_layout(args: argparse.Namespace) -> int:
-    if args.layout_command != "run":
-        print(f"error: unknown layout subcommand: {args.layout_command}", file=sys.stderr)
-        return 2
-
-    manager = SessionManager()
-    try:
-        session = manager.load(args.session)
-    except RuntimeError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-
-    try:
-        result = run_layout_stage(manager=manager, session=session)
-    except RuntimeError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-
-    if args.json:
-        print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
-    else:
-        print(f"Layout detected for {len(result.pages)} page(s).")
-        total_body = sum(len(p.body_regions) for p in result.pages)
-        print(f"Total body regions: {total_body}")
-    return 0
-
-
 def handle_ocr(args: argparse.Namespace) -> int:
     if args.ocr_command != "run":
         print(f"error: unknown ocr subcommand: {args.ocr_command}", file=sys.stderr)
@@ -504,7 +458,7 @@ def handle_ocr(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        result = run_ocr_stage(manager=manager, session=session, lang=args.lang)
+        result = run_ocr_stage(manager=manager, session=session)
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

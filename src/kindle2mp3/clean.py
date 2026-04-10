@@ -28,42 +28,6 @@ class CleanRunResult:
         }
 
 
-# ── Katakana long vowel fix ──────────────────────────
-# PaddleOCR often recognizes ー (katakana prolonged sound mark)
-# as 一 (kanji "one"). Fix this when 一 appears between katakana.
-#
-# Pattern: カタカナ + 一 + カタカナ or end-of-chunk
-_KATAKANA = r"\u30A0-\u30FF"
-_KANA_LONG_VOWEL_RE = re.compile(
-    rf"([{_KATAKANA}])一([{_KATAKANA}]|[^一-龥\d]|$)"
-)
-
-
-def _fix_katakana_long_vowel(text: str) -> str:
-    # Need to apply repeatedly because matches can overlap
-    # e.g. "チ一ム" → first pass catches チ一ム
-    prev = ""
-    while prev != text:
-        prev = text
-        text = _KANA_LONG_VOWEL_RE.sub(r"\1ー\2", text)
-    return text
-
-
-# ── Similar character fixes ──────────────────────────
-# Context-aware replacements for commonly confused characters.
-# Each entry: (compiled_regex, replacement)
-_CHAR_FIXES = [
-    # ソ → ン after katakana (バージョソ → バージョン)
-    (re.compile(rf"([{_KATAKANA}])ソ($|[^{_KATAKANA}])"), r"\1ン\2"),
-    # ツ → ッ before ト (プラツト → プラット, コミツト → コミット)
-    (re.compile(rf"([{_KATAKANA}])ツ(ト)"), r"\1ッ\2"),
-    # ヅ → ジ before エ (プロヅエクト → プロジェクト)
-    (re.compile(r"ヅエ"), "ジェ"),
-    # ヅ → ジ in プロヅクト → プロジェクト
-    (re.compile(r"プロヅクト"), "プロジェクト"),
-]
-
-
 # ── Noise patterns ──────────────────────────────────
 _NOISE_PATTERNS = [
     re.compile(r"^[\s　]*$"),  # blank lines
@@ -71,7 +35,6 @@ _NOISE_PATTERNS = [
 
 
 _SENTENCE_END_RE = re.compile(r"[。！？!?]")
-SHORT_LINE_THRESHOLD = 40
 
 
 class TextCleaner:
@@ -89,8 +52,6 @@ class TextCleaner:
             normalized.append(line)
 
         # Join OCR line-wraps into proper sentences.
-        # A line that doesn't end with sentence-ending punctuation
-        # is a continuation of the previous line (OCR line-wrap).
         sentences: list[str] = []
         current = ""
         for line in normalized:
@@ -99,7 +60,6 @@ class TextCleaner:
             else:
                 current = line
 
-            # Split on sentence boundaries within the joined text
             while True:
                 match = _SENTENCE_END_RE.search(current)
                 if not match:
@@ -114,13 +74,6 @@ class TextCleaner:
         return "\n".join(sentences)
 
     def _normalize(self, text: str) -> str:
-        # katakana long vowel
-        text = _fix_katakana_long_vowel(text)
-
-        # similar character fixes
-        for pattern, replacement in _CHAR_FIXES:
-            text = pattern.sub(replacement, text)
-
         # full-width tilde normalization
         text = text.replace("～", "〜")
 

@@ -77,7 +77,6 @@ def render_ocr_run_result(result) -> str:
     lines = [
         f"OCR completed for {len(result.pages)} page(s).",
         f"Provider: {result.provider}",
-        f"Language: {result.language}",
         f"Raw directory: {result.raw_dir}",
         f"Text directory: {result.text_dir}",
     ]

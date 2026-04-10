@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from kindle2mp3.capture import PageCaptureRunner
 from kindle2mp3.clean import TextCleaner
-from kindle2mp3.layout import DocLayoutDetector
 from kindle2mp3.merge import AudioMerger
-from kindle2mp3.ocr import PaddleOcrRunner
+from kindle2mp3.ndlocr import NdlocrRunner
 from kindle2mp3.sessions import Session, SessionManager
 from kindle2mp3.tts import VoicevoxTtsRunner
 
@@ -41,53 +40,23 @@ def run_capture_stage(
     return result
 
 
-def run_layout_stage(*, manager: SessionManager, session: Session):
+def run_ocr_stage(*, manager: SessionManager, session: Session):
     image_paths = sorted(manager.capture_raw_dir(session).glob("page_*.png"))
     if not image_paths:
         raise RuntimeError("no captured PNG files found for session")
 
-    orientation = session.metadata.get("orientation", "horizontal")
-    detector = DocLayoutDetector()
-    result = detector.run_for_session(
-        session_id=session.session_id,
-        image_paths=image_paths,
-        layout_dir=manager.layout_dir(session),
-        orientation=orientation,
-    )
-
-    session.metadata["status"] = "layout_completed"
-    layout_meta = session.metadata.setdefault("layout", {})
-    if isinstance(layout_meta, dict):
-        layout_meta["provider"] = "doclayout-yolo"
-        layout_meta["page_count"] = len(result.pages)
-        layout_meta["total_body_regions"] = sum(
-            len(p.body_regions) for p in result.pages
-        )
-    manager.save(session)
-    return result
-
-
-def run_ocr_stage(*, manager: SessionManager, session: Session, lang: str):
-    image_paths = sorted(manager.capture_raw_dir(session).glob("page_*.png"))
-    if not image_paths:
-        raise RuntimeError("no captured PNG files found for session")
-
-    orientation = session.metadata.get("orientation", "horizontal")
-    runner = PaddleOcrRunner(lang=lang)
+    runner = NdlocrRunner()
     result = runner.run_for_session(
         session_id=session.session_id,
         image_paths=image_paths,
-        layout_dir=manager.layout_dir(session),
         raw_dir=manager.ocr_raw_dir(session),
         text_dir=manager.ocr_text_dir(session),
-        orientation=orientation,
     )
 
     session.metadata["status"] = "ocr_completed"
     ocr_meta = session.metadata.setdefault("ocr", {})
     if isinstance(ocr_meta, dict):
-        ocr_meta["provider"] = "paddleocr"
-        ocr_meta["language"] = lang
+        ocr_meta["provider"] = "ndlocr-lite"
         ocr_meta["page_count"] = len(result.pages)
     manager.save(session)
     return result
