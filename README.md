@@ -5,16 +5,15 @@ Kindle の書籍をスクリーンショット → OCR → 音声合成して MP
 ## パイプライン
 
 ```
-capture → layout → ocr → clean → llm-fix → tts → merge
+capture → ocr → clean → llm-fix → tts → merge
 ```
 
 1. **capture** — Kindle ウィンドウのページを自動でスクリーンショット
-2. **layout** — DocLayout-YOLO でページ構造を分析し、本文領域を特定
-3. **ocr** — PaddleOCR で本文領域のみを OCR
-4. **clean** — 正規表現で OCR 誤字を修正、行折り返しを文単位に結合
-5. **llm-fix** — Gemini API で OCR テキストを読み上げ用に整形
-6. **tts** — VOICEVOX で音声合成
-7. **merge** — WAV を結合して MP3 を生成
+2. **ocr** — ndlocr-lite でレイアウト検出と文字認識を同時に実行 (本文・タイトル本文のみ抽出)
+3. **clean** — 正規表現で OCR 誤字を修正、行折り返しを文単位に結合
+4. **llm-fix** — Gemini API で OCR テキストを読み上げ用に整形
+5. **tts** — VOICEVOX で音声合成
+6. **merge** — WAV を結合して MP3 を生成
 
 ## セットアップ
 
@@ -74,7 +73,6 @@ uv run kindle2mp3 run --title "Book" --speaker 3
 
 ```bash
 uv run kindle2mp3 capture run --session book_0001
-uv run kindle2mp3 layout run --session book_0001
 uv run kindle2mp3 ocr run --session book_0001
 uv run kindle2mp3 clean run --session book_0001
 uv run kindle2mp3 llm-fix run --session book_0001
@@ -95,10 +93,9 @@ uv run kindle2mp3 session show --session book_0001 --json
 workspace/book_0001/
   session.json
   capture/raw/          page_000001.png ...
-  layout/               page_000001.json (DocLayout-YOLO 結果)
   ocr/
-    raw/                page_000001.json (OCR 生結果)
-    text/               page_000001.txt (OCR テキスト)
+    raw/                page_000001.xml (ndlocr-lite XML 出力)
+    text/               page_000001.txt (本文行のみ)
     clean/              page_000001.txt (正規表現修正後)
     llm_windows/        window_0001.txt ... (LLM fix 中間結果)
     combined.txt        最終テキスト
@@ -115,15 +112,15 @@ workspace/book_0001/
 ## 横書き・縦書き対応
 
 - `--key auto` (デフォルト): →キーと←キーを試して自動判定
-- 横書き: →キーでページ送り、OCR は上→下・左→右
-- 縦書き: ←キーでページ送り、OCR は右→左・上→下、layout 検出時にページを90度回転
+- 横書き: →キーでページ送り
+- 縦書き: ←キーでページ送り
+- 読み順は ndlocr-lite の `ORDER` 属性に従って復元される
 
 ## 技術スタック
 
 - **ウィンドウ制御**: PyObjC + Quartz/CoreGraphics
 - **ページ送り**: AppleScript + System Events
-- **レイアウト分析**: DocLayout-YOLO
-- **OCR**: PaddleOCR
+- **レイアウト + OCR**: [ndlocr-lite](https://github.com/ndl-lab/ndlocr-lite) (DEIM レイアウト検出 + Parseq 文字認識、ONNXRuntime)
 - **テキスト整形**: Gemini API (gemini-2.5-flash-lite)
 - **音声合成**: VOICEVOX
 - **音声結合**: ffmpeg (フォールバック: afconvert)
