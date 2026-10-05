@@ -7,7 +7,7 @@ Kindle デスクトップアプリの書籍ページをスクリーンショッ�
 ## 処理フロー
 
 ```
-capture → layout → ocr → clean → llm-fix → tts → merge
+capture → ocr → clean → llm-fix → tts → merge
 ```
 
 ## 採用技術
@@ -18,21 +18,15 @@ capture → layout → ocr → clean → llm-fix → tts → merge
 - **AppleScript + System Events** でページ送り (`key code 124/123`)
 - `screencapture` コマンドをプライマリ、Quartz API をフォールバックに
 
-### レイアウト分析
+### レイアウト + OCR
 
-- **DocLayout-YOLO** (YOLOv10 ベース)
-- DocStructBench で学習済みモデル (`juliozhao/DocLayout-YOLO-DocStructBench`)
-- 検出カテゴリ: plain text, title, abandon, figure, figure_caption, Page-header, Page-footer 等
-- `plain text` と `title` を本文領域として採用
-
-縦書き対応:
-- ページ画像を90度回転してから検出し、bbox を逆変換
-
-### OCR
-
-- **PaddleOCR** (`paddleocr` パッケージ)
-- layout で特定した本文領域以外を白塗りマスクしてから OCR
-- ページ全体の文脈 (フォントサイズ、行間) が保たれるため精度が維持される
+- **[ndlocr-lite](https://github.com/ndl-lab/ndlocr-lite)** をワンパスで実行 (旧 DocLayout-YOLO + PaddleOCR の二段構成から移行)
+- レイアウト検出: DEIM (`deim-s-1024x1024.onnx`)
+- 文字認識: Parseq の3モデル (短行 30 / 中行 50 / 長行 100 ラベル) を行幅で使い分け
+- ONNXRuntime で実行 (デフォルト `device="cpu"`)
+- 出力は ALTO 系 XML (`<BLOCK>` / `<LINE>` 構造) で `ORDER` 属性に読み順を持つ
+- 本文抽出は LINE TYPE が `本文` または `タイトル本文` のみ採用
+- ヘッダ等のノイズ除去のため、BLOCK TYPE = `柱` と重なる LINE は除外
 
 ### テキスト整形
 
@@ -64,8 +58,7 @@ src/kindle2mp3/
   cli.py            CLIエントリポイント、argparse、.env読み込み
   pipeline.py       各ステージのオーケストレーション
   capture.py        ウィンドウキャプチャ、キー送信、自動方向判定
-  layout.py         DocLayout-YOLO によるレイアウト検出
-  ocr.py            PaddleOCR、マスク処理、行ソート
+  ndlocr.py         ndlocr-lite ラッパー、XML パース、本文抽出
   clean.py          正規表現ベースのテキスト正規化
   llm_fix.py        Gemini API によるテキスト整形
   tts.py            VOICEVOX TTS、テキストチャンク分割

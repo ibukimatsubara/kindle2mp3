@@ -3,7 +3,7 @@
 ## パイプライン
 
 ```
-capture → layout → ocr → clean → llm-fix → tts → merge
+capture → ocr → clean → llm-fix → tts → merge
 ```
 
 各ステップはセッション単位で管理される。中間成果物はすべて保存され、途中から再実行できる。
@@ -14,7 +14,7 @@ capture → layout → ocr → clean → llm-fix → tts → merge
 uv run kindle2mp3 run --title "本のタイトル"
 ```
 
-全7ステップが順に実行される。進捗は `[1/7] capture: Capturing pages...` の形式で表示される。
+全6ステップが順に実行される。進捗は `[1/6] capture: Capturing pages...` の形式で表示される。
 
 ## 各ステップの詳細
 
@@ -33,34 +33,22 @@ uv run kindle2mp3 capture run --session book_0001
 
 出力: `capture/raw/page_000001.png` ...
 
-### 2. layout — レイアウト検出
+### 2. ocr — レイアウト検出 + 文字認識
 
-DocLayout-YOLO でページ画像の構造を分析し、本文領域 (plain text, title) を特定する。ヘッダ、フッタ、図、ページ番号は除外される。
-
-```bash
-uv run kindle2mp3 layout run --session book_0001
-```
-
-- 縦書きページは自動的に90度回転してから検出し、座標を逆変換する
-- 検出結果はページ単位の JSON として保存
-
-出力: `layout/page_000001.json` ...
-
-### 3. ocr — 文字認識
-
-PaddleOCR で本文領域のみを OCR する。非本文領域は白塗りマスクで除外される。
+[ndlocr-lite](https://github.com/ndl-lab/ndlocr-lite) でレイアウト検出と OCR をワンパスで実行する。
 
 ```bash
 uv run kindle2mp3 ocr run --session book_0001
 ```
 
-- layout の結果を参照し、本文領域だけを残した画像で OCR
-- 縦書きの場合は行の読み順を右→左・上→下に変更
-- layout がない場合はフォールバックとして全体を OCR
+- DEIM レイアウト検出 + Parseq 文字認識 (ONNXRuntime, CPU 実行)
+- ALTO 系 XML が `ocr/raw/` に出力される
+- 本文 (`本文` / `タイトル本文`) のみ採用、`柱` (ヘッダ等) と重なる行は除外
+- 行の読み順は XML の `ORDER` 属性で復元 (横書き・縦書き共通)
 
-出力: `ocr/raw/page_000001.json`, `ocr/text/page_000001.txt`
+出力: `ocr/raw/page_000001.xml`, `ocr/text/page_000001.txt`
 
-### 4. clean — テキスト正規化
+### 3. clean — テキスト正規化
 
 正規表現ベースで OCR 誤字を修正し、行折り返しを文単位に結合する。
 
@@ -76,7 +64,7 @@ uv run kindle2mp3 clean run --session book_0001
 
 出力: `ocr/clean/page_000001.txt`, `ocr/combined.txt`
 
-### 5. llm-fix — LLM による整形
+### 4. llm-fix — LLM による整形
 
 Gemini API を使い、OCR テキストを読み上げ用に整形する。
 
@@ -92,7 +80,7 @@ uv run kindle2mp3 llm-fix run --session book_0001
 
 `GEMINI_API_KEY` 環境変数が必要 (`.env` に記載)。
 
-### 6. tts — 音声合成
+### 5. tts — 音声合成
 
 VOICEVOX で チャンク単位に音声を生成する。
 
@@ -105,7 +93,7 @@ uv run kindle2mp3 tts run --session book_0001 --speaker 58
 
 出力: `tts/chunks/chunk_000001.txt`, `tts/wav/chunk_000001.wav`, `tts/manifest.json`
 
-### 7. merge — 音声結合
+### 6. merge — 音声結合
 
 WAV ファイルを結合して最終 MP3 を生成する。
 
@@ -129,7 +117,7 @@ uv run kindle2mp3 session show --session book_0001 --json
 セッション状態は `session.json` に記録される。各ステップ完了時に `status` が更新される:
 
 ```
-capture_pending → capture_completed → layout_completed → ocr_completed
+capture_pending → capture_completed → ocr_completed
 → clean_completed → llm_fix_completed → tts_completed → merge_completed
 ```
 
